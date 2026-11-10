@@ -1,0 +1,11 @@
+# Hashed pin for dcc-mcp-core 0.20.36.
+# Digests are the GitHub release asset digests for tag v0.20.36.
+# Install with: pip install --require-hashes -r requirements.lock
+dcc-mcp-core==0.20.36 \
+    --hash=sha256:93c7359379bbbbff0a5e1d3ba7d3ac47875fa075c2cdc913ffbeb932dec94a5e \
+    --hash=sha256:f9668f5f74e257416fc366cf1d4a8b95afcedeb3ee99e47f52ae04032daaee42 \
+    --hash=sha256:1fc94c2694dd9004640269b51b085c8bc5567019291f86e1a68a5bb062751292 \
+    --hash=sha256:0eb012e043b7d39ba46bd5411e4faf00fde49237cc9c1ea2e3f01adc9f4e16f4 \
+    --hash=sha256:bdaecd56f260799447fb168253fd1ac7b0f0a9b707c5772b9bf9136e019a98eb \
+    --hash=sha256:f8e7c285b0f6c76c246d9ba96c2970abe985ff1592bcb638091b0360a12332ae \
+    --hash=sha256:449d64bbe2d5757aa6704428251749ea5909964bcb3a6d5a5f6108793329114a

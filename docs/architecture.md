@@ -36,7 +36,7 @@ The adapter has two process boundaries and one mandatory thread-affinity hop.
 - Persistent IDs are the public entity reference.
 - Destructive operations require explicit targets and are marked with MCP
   `destructive_hint` annotations.
-- File output rejects an existing target unless `overwrite=true`.
+- File output refuses an existing target. There is no `overwrite` flag. `save_copy` writes `<JobID>_<Project>_Model_v<NN>.skp` only when the base name matches the source and the version is strictly higher.
 
 ## Verification tiers
 

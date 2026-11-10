@@ -26,7 +26,7 @@ The order is always render first, then enhance, then QA. Stages never get skippe
 
 ## 3. Hard rules
 1. **Never touch the originals.** Before any work, hash every protected file and check the hashes again afterward. Files a project lists as off-limits, like another client's model, are never opened, saved, or closed.
-2. **Versioned saves only.** Every change is saved as a new file (`<name> v<major>.<minor>.skp`) to a path that doesn't exist yet. Overwriting is never allowed, and the save refuses if the target exists.
+2. **Versioned saves only.** Every change is saved as a new file (`<JobID>_<Project>_Model_v<NN>.skp`) with the same base name as the source and a strictly higher version, to a path that doesn't exist yet. Overwriting is never allowed, and the save refuses if the target exists.
 3. **One change, one undo.** Each edit is a single undoable operation (start, commit, or abort), read back afterward, and logged with the entity, before and after extents, and the source sheet.
 4. **BLOCK, never resize.** If something doesn't fit, block that placement and report it as specified vs available and the difference. Never resize, substitute, or skip anything without saying so.
 5. **Tolerance.** Walls and existing geometry within ±1/8" of the drawing count as MATCH, and anything larger is BLOCK. Appliances and packages get zero tolerance, so any difference is a BLOCK.
@@ -35,20 +35,22 @@ The order is always render first, then enhance, then QA. Stages never get skippe
 8. **Never invent data.** Undimensioned items stay CANNOT VERIFY until the owner gives a value.
 9. **No live-sync or render-scene changes** unless the task explicitly covers D5.
 10. **No external sends.** Agents never email or message clients or vendors. Drafts go to the owner for review.
+11. **No delete without Michelle's approval.** Erasing entities, tags, or scenes refuses unless she has set the owner-approval flag. The default is refuse.
 
 ## 4. Model organization (every project)
-- **Tags** are grouped in tag folders by category: Roof, Slab, Foundation, Walls – Exterior, Walls – Bedroom, Walls – Bathroom, Walls – Kitchen, Doors, Windows, Cabinetry, Appliances, Stairs, Site, Reference.
-- **Groups** are organized by room in the Outliner. Each room's items sit under that room's name, for example `L2 – Gym Bar` or `L1 – Kitchen`, using the room names on the plans.
+- **Tags** use the RenCo modeling codes (`A-WALL-EXT`, `I-CABINETRY`, and the rest of that set) and are grouped in tag folders by category: Roof, Slab, Foundation, Walls – Exterior, Walls – Bedroom, Walls – Bathroom, Walls – Kitchen, Doors, Windows, Cabinetry, Appliances, Stairs, Site, Reference.
+- **Groups** are organized by room in the Outliner. Each room's items sit under that room's name, for example `L2 – Gym Bar` or `L1 – Kitchen`, using the room names on the plans. Room grouping accepts root entities only. Nested input is refused and nothing is moved. The level hierarchy `LEVEL / 00_REFERENCE` through `05` is the manual standard and is not built by the adapter.
 - **Shared elements,** like a wall between two rooms, get logged under both rooms but never split.
 - Reorganizing never moves geometry. Prove it with a before and after bounds check.
 
 ## 5. Code rules (the repo)
-- Work on a feature branch, then open a draft pull request. Never push to `main`, merge, or force-push without the owner's OK.
+- Only Michelle merges.
+- Work on a feature branch, then open a draft pull request. Never push to `main` or force-push.
 - Every safety rule in section 3 has an automated test, and tests have to pass before a PR is ready.
 - No runtime network calls, telemetry, webhooks, `eval` of AI text, or downloaded scripts. Dependencies are pinned to audited versions.
 - File access is limited to the project folder.
 - Materials tools stay off by default.
-- Real SketchUp runs happen only on a machine the owner approves, and only on a throwaway or versioned test copy.
+- Real SketchUp runs happen only on TKTPC, the Alienware, and only after Michelle's OK before opening or saving anything there. Use a throwaway or versioned test copy.
 
 ## 6. Running a project
 1. Create `PROJECT.md` with the name, machine and folder, protected files and hashes, off-limits files, the source list, and owner decisions with their dates.
@@ -105,6 +107,6 @@ Each trigger starts exactly one action. If a trigger's inputs or approvals are m
 **Code triggers:**
 - A pull request is opened or pushed: run the full test suite.
 - Tests fail: the PR stays in draft.
-- Tests pass: request Phineas's review. Only the owner merges.
+- Tests pass: request Phineas's review. Only Michelle merges.
 - A dependency changes: pin it and re-audit it.
 - Merged to `main`: tag the release and update `CHANGELOG.md`. Nothing deploys automatically to any of the owner's machines.

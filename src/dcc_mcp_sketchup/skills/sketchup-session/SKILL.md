@@ -22,6 +22,7 @@ metadata:
 
 Inspect before mutating. Lengths are inches. File paths must be absolute and
 inside the configured project folder (`DCC_MCP_SKETCHUP_PROJECT_FOLDER`).
-`save_copy` is the only save: a new `<name> v<major>.<minor>.skp` that is not
-the source path and does not already exist. Import and export refuse anything
+`save_copy` is the only save: a new `<JobID>_<Project>_Model_v<NN>.skp` with the
+same base name as the source and a strictly higher version. It is not the
+source path and does not already exist. Import and export refuse anything
 outside the project folder. There is no overwrite.

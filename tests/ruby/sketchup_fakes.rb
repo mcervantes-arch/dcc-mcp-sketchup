@@ -224,6 +224,11 @@ module FakeEntityAttributes
     bucket[key.to_s]
   end
 
+  def attribute_dictionaries
+    store = @attribute_store || {}
+    store.keys
+  end
+
   def attribute_dictionary_dump
     store = @attribute_store || {}
     store.each_with_object({}) do |(name, pairs), copy|

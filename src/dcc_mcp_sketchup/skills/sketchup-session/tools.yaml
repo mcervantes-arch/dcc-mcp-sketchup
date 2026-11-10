@@ -11,7 +11,7 @@ tools:
     annotations: {read_only_hint: true, destructive_hint: false, idempotent_hint: true, open_world_hint: false, deferred_hint: false}
 
   - name: inspect_model
-    description: Inspect model identity, bounds, root entity counts, materials, scenes, tags, and selection.
+    description: Inspect model identity, bounds, root entity counts, material count, scenes, tags, and selection.
     source_file: scripts/inspect_model.py
     input_schema: {type: object, properties: {}, additionalProperties: false}
     output_schema: {type: object}
@@ -53,8 +53,8 @@ tools:
     timeout_hint_secs: 120
     annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: false, open_world_hint: false, deferred_hint: true}
     call_examples:
-      - arguments: {path: "C:/projects/reno/concept v1.0.skp"}
-        note: Save a new versioned copy. The file name is "<name> v<major>.<minor>.skp".
+      - arguments: {path: "C:/projects/reno/JOB1_Synthetic_Model_v02.skp"}
+        note: Save a new version. The file name is "<JobID>_<Project>_Model_v<NN>.skp", the base name matches the source, and the version is strictly higher.
 
   - name: validate_model
     description: Validate the model and report invalid root entities without modifying it.
@@ -116,7 +116,7 @@ tools:
         note: Export into the configured project folder. An existing file is refused.
 
   - name: validate_spec
-    description: Read-only comparison of the model to a spec. Returns MATCH, MISMATCH, or BLOCK with specified, available, and delta inches. Walls tolerate ±1/8 inch. Appliances tolerate 0. Never edits the model.
+    description: Read-only comparison of the model to a spec. Returns MATCH, MISMATCH, BLOCK, or CANNOT VERIFY with specified, available, and delta inches. Walls and openings tolerate ±1/8 inch. Appliances, products, and packages tolerate 0 and never suggest filler. Also reports edge contact, gaps, and overlaps. Never edits the model.
     source_file: scripts/validate_spec.py
     input_schema:
       type: object
@@ -135,7 +135,7 @@ tools:
                 required: [id, type, x, y, z, width, depth, height]
                 properties:
                   id: {type: integer, minimum: 1}
-                  type: {type: string, enum: [wall, appliance]}
+                  type: {type: string, enum: [wall, opening, appliance, product, package]}
                   x: {type: number}
                   y: {type: number}
                   z: {type: number}

@@ -43,6 +43,28 @@ class CommandsTest < Minitest::Test
     end
   end
 
+  def with_approval
+    previous = ENV['DCC_MCP_SKETCHUP_OWNER_APPROVAL']
+    ENV['DCC_MCP_SKETCHUP_OWNER_APPROVAL'] = '1'
+    yield
+  ensure
+    if previous.nil?
+      ENV.delete('DCC_MCP_SKETCHUP_OWNER_APPROVAL')
+    else
+      ENV['DCC_MCP_SKETCHUP_OWNER_APPROVAL'] = previous
+    end
+  end
+
+  def name_model(directory, version)
+    File.join(directory, format('JOB1_Synthetic_Model_v%02d.skp', version))
+  end
+
+  def source_model(directory, version = 1)
+    path = name_model(directory, version)
+    model.instance_variable_set(:@path, path)
+    path
+  end
+
   def place(width, depth, height, x = 0, y = 0, z = 0)
     group = model.entities.add_group
     # FakeBounds is (X width, Y height, Z depth). Spec depth is Y and spec height is Z.
@@ -336,7 +358,9 @@ class CommandsTest < Minitest::Test
   def test_erase_entities_verifies_nothing_resolves_afterwards
     group = model.entities.add_group
 
-    result = @commands.execute('entity.erase', 'entity_ids' => [group.persistent_id])
+    result = with_approval do
+      @commands.execute('entity.erase', 'entity_ids' => [group.persistent_id])
+    end
     absent = result['verification']['checks'].find { |check| check['check'] == 'entity_absent' }
 
     assert_equal [], absent['expected']
@@ -469,11 +493,12 @@ class CommandsTest < Minitest::Test
     element = spec_element(wall, 'wall')
     element.delete('width')
 
-    error = assert_raises(ArgumentError) do
-      @commands.execute('model.validate_spec', 'spec' => { 'elements' => [element] })
-    end
+    result = @commands.execute('model.validate_spec', 'spec' => { 'elements' => [element] })
 
-    assert_match(/missing width/, error.message)
+    assert_equal 'CANNOT VERIFY', result['status']
+    assert_equal 'CANNOT VERIFY', result['elements'].first['status']
+    assert_equal ['width'], result['elements'].first['missing_axes']
+    assert_nil result['elements'].first['available']
     assert_equal 0, model.commits
   end
 
@@ -522,6 +547,9 @@ class CommandsTest < Minitest::Test
     assert_equal before, after
     assert_includes names, 'Walls – Bedroom'
     assert_includes names, 'Appliances'
+    codes = result['categories'].map { |item| item['tag'] }
+    assert_includes codes, 'A-WALL-EXT'
+    assert_includes codes, 'I-CABINETRY'
     assert_equal false, result['geometry_moved']
     assert_includes result.dig('verification', 'checks').map { |check| check['check'] }, "bounds_unchanged_#{wall.persistent_id}"
     assert_equal commits + 1, model.commits
@@ -611,7 +639,7 @@ class CommandsTest < Minitest::Test
     assert_equal 'Shot 2', update.dig('verification', 'checks')
                                  .find { |check| check['check'] == 'scene_present' }['actual']
 
-    removal = @commands.execute('scenes.remove', 'name' => 'Shot 2')
+    removal = with_approval { @commands.execute('scenes.remove', 'name' => 'Shot 2') }
     absent = removal.dig('verification', 'checks').find { |check| check['check'] == 'scene_absent' }
     assert_equal false, absent['actual']
   end
@@ -636,7 +664,7 @@ class CommandsTest < Minitest::Test
     update = @commands.execute('tags.list', {})
     assert_includes update['tags'].map { |tag| tag['name'] }, 'Walls'
 
-    removal = @commands.execute('tags.remove', 'name' => 'Walls')
+    removal = with_approval { @commands.execute('tags.remove', 'name' => 'Walls') }
     absent = removal.dig('verification', 'checks').find { |check| check['check'] == 'tag_absent' }
     assert_equal false, absent['actual']
   end
@@ -646,7 +674,7 @@ class CommandsTest < Minitest::Test
     model.layers.define_singleton_method(:remove) { |_layer| true }
 
     error = assert_raises(DccMcp::SketchupAdapter::VerificationFailure) do
-      @commands.execute('tags.remove', 'name' => 'Walls')
+      with_approval { @commands.execute('tags.remove', 'name' => 'Walls') }
     end
 
     assert_equal 'tag_absent', error.payload['check']
@@ -666,7 +694,8 @@ class CommandsTest < Minitest::Test
 
   def test_save_copy_writes_a_new_versioned_file
     Dir.mktmpdir do |directory|
-      path = File.join(directory, 'Model v1.0.skp')
+      source_model(directory, 1)
+      path = name_model(directory, 2)
 
       result = with_project(directory) do
         @commands.execute('model.save_copy', 'path' => path)
@@ -680,7 +709,8 @@ class CommandsTest < Minitest::Test
 
   def test_overwrite_is_refused
     Dir.mktmpdir do |directory|
-      path = File.join(directory, 'Model v1.0.skp')
+      source_model(directory, 1)
+      path = name_model(directory, 2)
 
       error = assert_raises(ArgumentError) do
         with_project(directory) do
@@ -695,7 +725,8 @@ class CommandsTest < Minitest::Test
 
   def test_existing_save_target_is_refused
     Dir.mktmpdir do |directory|
-      path = File.join(directory, 'Model v1.1.skp')
+      source_model(directory, 1)
+      path = name_model(directory, 2)
       File.write(path, 'already here')
 
       error = assert_raises(ArgumentError) do
@@ -711,8 +742,7 @@ class CommandsTest < Minitest::Test
 
   def test_save_copy_refuses_the_source_path
     Dir.mktmpdir do |directory|
-      path = File.join(directory, 'Model v1.0.skp')
-      model.instance_variable_set(:@path, path)
+      path = source_model(directory, 1)
 
       error = assert_raises(ArgumentError) do
         with_project(directory) do
@@ -720,13 +750,29 @@ class CommandsTest < Minitest::Test
         end
       end
 
-      assert_match(/must differ from the source path/, error.message)
+      assert_match(/strictly higher than the source/, error.message)
       refute File.file?(path)
+    end
+  end
+
+  def test_save_copy_refuses_a_different_base_name
+    Dir.mktmpdir do |directory|
+      source_model(directory, 1)
+      path = File.join(directory, 'JOB9_Other_Model_v02.skp')
+
+      error = assert_raises(ArgumentError) do
+        with_project(directory) do
+          @commands.execute('model.save_copy', 'path' => path)
+        end
+      end
+
+      assert_match(/base name must match the source model/, error.message)
     end
   end
 
   def test_unversioned_save_name_is_refused
     Dir.mktmpdir do |directory|
+      source_model(directory, 1)
       path = File.join(directory, 'model.skp')
 
       error = assert_raises(ArgumentError) do
@@ -735,14 +781,15 @@ class CommandsTest < Minitest::Test
         end
       end
 
-      assert_match(/versioned \.skp name/, error.message)
+      assert_match(/JobID>_<Project>_Model_v<NN>/, error.message)
     end
   end
 
   def test_path_outside_the_project_folder_is_refused
     Dir.mktmpdir do |project|
       Dir.mktmpdir do |outside|
-        path = File.join(outside, 'Model v1.0.skp')
+        source_model(project, 1)
+        path = File.join(outside, 'JOB1_Synthetic_Model_v02.skp')
 
         error = assert_raises(ArgumentError) do
           with_project(project) do
@@ -761,11 +808,11 @@ class CommandsTest < Minitest::Test
       Dir.mktmpdir do |outside|
         link = File.join(project, 'escape')
         File.symlink(outside, link)
-        path = File.join(link, 'Model v1.0.skp')
+        path = File.join(link, 'scene.dae')
 
         error = assert_raises(ArgumentError) do
           with_project(project) do
-            @commands.execute('model.export', 'path' => path.sub(/\.skp\z/, '.dae'))
+            @commands.execute('model.export', 'path' => path)
           end
         end
 
@@ -774,9 +821,43 @@ class CommandsTest < Minitest::Test
     end
   end
 
+  def test_file_symlink_is_refused_for_save_export_and_import
+    Dir.mktmpdir do |project|
+      Dir.mktmpdir do |outside|
+        source_model(project, 1)
+        outside_file = File.join(outside, 'secret.skp')
+        File.write(outside_file, 'secret')
+        save_link = name_model(project, 2)
+        File.symlink(outside_file, save_link)
+        export_link = File.join(project, 'scene.glb')
+        File.symlink(File.join(outside, 'scene.glb'), export_link)
+        import_link = File.join(project, 'source.dae')
+        File.write(File.join(outside, 'source.dae'), '<COLLADA/>')
+        File.symlink(File.join(outside, 'source.dae'), import_link)
+
+        with_project(project) do
+          save_error = assert_raises(ArgumentError) do
+            @commands.execute('model.save_copy', 'path' => save_link)
+          end
+          export_error = assert_raises(ArgumentError) do
+            @commands.execute('model.export', 'path' => export_link)
+          end
+          import_error = assert_raises(ArgumentError) do
+            @commands.execute('model.import', 'path' => import_link)
+          end
+
+          assert_match(/symlink/, save_error.message)
+          assert_match(/symlink/, export_error.message)
+          assert_match(/symlink/, import_error.message)
+          assert_equal 'secret', File.read(outside_file)
+        end
+      end
+    end
+  end
+
   def test_unset_project_folder_fails_closed
     Dir.mktmpdir do |directory|
-      path = File.join(directory, 'Model v1.0.skp')
+      path = name_model(directory, 2)
       ENV.delete('DCC_MCP_SKETCHUP_PROJECT_FOLDER')
 
       error = assert_raises(ArgumentError) do
@@ -866,12 +947,14 @@ class CommandsTest < Minitest::Test
       model.entities.add_group
       model.pages.add('Shot 1')
       model.layers.add('Walls')
+      source_model(directory, 1)
 
-      with_project(directory) do
+      with_approval do
+        with_project(directory) do
         mutating.each do |name|
           first = model.entities.first
           params = case name
-                   when 'model.save_copy' then { 'path' => File.join(directory, 'Model v1.0.skp') }
+                   when 'model.save_copy' then { 'path' => name_model(directory, 2) }
                    when 'model.export' then { 'path' => File.join(directory, 'scene.glb') }
                    when 'model.import' then { 'path' => File.join(directory, 'source.dae') }
                    when 'geometry.add_box' then box_params
@@ -896,6 +979,7 @@ class CommandsTest < Minitest::Test
           refute_empty result.dig('verification', 'checks'), "#{name} verified with no checks"
           assert_equal name, result.dig('verification', 'tool')
         end
+        end
       end
     end
   end
@@ -916,6 +1000,234 @@ class CommandsTest < Minitest::Test
       result = @commands.execute(name, params)
 
       refute_includes result.keys, 'verification', name
+      if name == 'diagnostics.ping'
+        refute_includes result.keys, 'unit'
+      end
+      if name == 'model.inspect'
+        assert_equal 'inches', result['unit']
+      end
     end
+  end
+
+  def test_any_appliance_or_package_difference_is_block
+    appliance = place(30.0, 24.0, 36.0)
+    package = place(30.0, 24.0, 36.0, 40, 0, 0)
+    larger = spec_element(appliance, 'appliance')
+    larger['width'] = 29.0
+    smaller = spec_element(package, 'package')
+    smaller['height'] = 36.5
+    commits = model.commits
+
+    result = @commands.execute(
+      'model.validate_spec',
+      'spec' => { 'elements' => [larger, smaller] }
+    )
+    appliance_row = result['elements'][0]
+    package_row = result['elements'][1]
+
+    assert_equal 'BLOCK', result['status']
+    assert_equal 'BLOCK', appliance_row['status']
+    assert_equal 'BLOCK', package_row['status']
+    assert_in_delta 1.0, appliance_row.dig('delta', 'width'), 1e-9
+    assert_in_delta(-0.5, package_row.dig('delta', 'height'), 1e-9)
+    assert_equal 30.0, appliance_row.dig('specified', 'width')
+    assert_equal 30.0, appliance_row.dig('available', 'width')
+    refute_includes result.to_s, 'filler'
+    assert_equal commits, model.commits
+  end
+
+  def test_opening_uses_the_wall_tolerance
+    opening = place(36.0, 6.0, 80.0)
+    element = spec_element(opening, 'opening')
+    element['width'] = 36.125
+
+    result = @commands.execute('model.validate_spec', 'spec' => { 'elements' => [element] })
+
+    assert_equal 'MATCH', result['elements'][0]['status']
+  end
+
+  def test_product_difference_is_block
+    product = place(20.0, 20.0, 20.0)
+    element = spec_element(product, 'product')
+    element['depth'] = 20.0625
+
+    result = @commands.execute('model.validate_spec', 'spec' => { 'elements' => [element] })
+
+    assert_equal 'BLOCK', result['elements'][0]['status']
+    assert_in_delta(-0.0625, result['elements'][0].dig('delta', 'depth'), 1e-9)
+  end
+
+  def test_missing_axis_is_cannot_verify
+    wall = place(10.0, 1.0, 8.0)
+    element = spec_element(wall, 'wall')
+    element.delete('height')
+    element.delete('depth')
+
+    result = @commands.execute('model.validate_spec', 'spec' => { 'elements' => [element] })
+
+    assert_equal 'CANNOT VERIFY', result['status']
+    assert_equal 'CANNOT VERIFY', result['elements'][0]['status']
+    assert_equal %w[depth height], result['elements'][0]['missing_axes']
+  end
+
+  def test_rotated_and_nested_entities_are_cannot_verify
+    outer = place(10.0, 10.0, 10.0)
+    nested = outer.entities.add_group
+    nested.drift_bounds(4, 4, 4)
+    rotated = place(8.0, 8.0, 8.0, 20, 0, 0)
+    axis = Struct.new(:x, :y, :z)
+    transform = Struct.new(:xaxis, :yaxis, :zaxis).new(
+      axis.new(0.707, 0.707, 0.0),
+      axis.new(-0.707, 0.707, 0.0),
+      axis.new(0.0, 0.0, 1.0)
+    )
+    rotated.define_singleton_method(:transformation) { transform }
+    before = [rotated.bounds.min.x, nested.bounds.width]
+
+    result = @commands.execute(
+      'model.validate_spec',
+      'spec' => {
+        'elements' => [spec_element(rotated, 'wall'), spec_element(nested, 'appliance', x: 0, y: 0, z: 0).merge(
+          'width' => 4.0, 'depth' => 4.0, 'height' => 4.0
+        )]
+      }
+    )
+
+    assert_equal 'CANNOT VERIFY', result['status']
+    assert_match(/rotated/, result['elements'][0]['reason'])
+    assert_match(/nested/, result['elements'][1]['reason'])
+    assert_equal before, [rotated.bounds.min.x, nested.bounds.width]
+  end
+
+  def test_contact_gap_and_overlap_are_reported_without_moving_geometry
+    left = place(10.0, 10.0, 10.0, 0, 0, 0)
+    touching = place(10.0, 10.0, 10.0, 10, 0, 0)
+    gapped = place(10.0, 10.0, 10.0, 22, 0, 0)
+    overlapping = place(10.0, 10.0, 10.0, 5, 0, 0)
+    before = [left, touching, gapped, overlapping].map { |item| [item.bounds.min.x, item.bounds.width] }
+    commits = model.commits
+
+    result = @commands.execute(
+      'model.validate_spec',
+      'spec' => {
+        'elements' => [left, touching, gapped, overlapping].map { |item| spec_element(item, 'wall') }
+      }
+    )
+    relations = result['contacts'].map { |item| [item['left_id'], item['right_id'], item['relation']] }
+
+    assert_includes relations, [left.persistent_id, touching.persistent_id, 'contact']
+    assert_includes relations, [left.persistent_id, gapped.persistent_id, 'gap']
+    assert_includes relations, [left.persistent_id, overlapping.persistent_id, 'overlap']
+    assert result['contacts'].all? { |item| item['edited'] == false }
+    assert_equal before, [left, touching, gapped, overlapping].map { |item| [item.bounds.min.x, item.bounds.width] }
+    assert_equal commits, model.commits
+  end
+
+  def test_attribute_dictionary_is_only_renco_and_type_is_write_once
+    group = model.entities.add_group
+    commits = model.commits
+
+    error = assert_raises(ArgumentError) do
+      @commands.execute(
+        'attributes.set',
+        'entity_id' => group.persistent_id,
+        'dictionary' => 'dynamic_attributes',
+        'key' => 'lenx',
+        'value' => '10'
+      )
+    end
+    assert_match(/dictionary must be renco/, error.message)
+    assert_equal commits, model.commits
+
+    @commands.execute(
+      'attributes.set',
+      'entity_id' => group.persistent_id,
+      'dictionary' => 'renco',
+      'key' => 'type',
+      'value' => 'wall'
+    )
+    rewrite = assert_raises(ArgumentError) do
+      @commands.execute(
+        'attributes.set',
+        'entity_id' => group.persistent_id,
+        'dictionary' => 'renco',
+        'key' => 'type',
+        'value' => 'appliance'
+      )
+    end
+    assert_match(/write-once/, rewrite.message)
+    assert_equal 'wall', group.get_attribute('renco', 'type')
+
+    with_approval do
+      @commands.execute(
+        'attributes.set',
+        'entity_id' => group.persistent_id,
+        'dictionary' => 'renco',
+        'key' => 'type',
+        'value' => 'appliance'
+      )
+    end
+    assert_equal 'appliance', group.get_attribute('renco', 'type')
+  end
+
+  def test_nested_room_input_is_refused
+    outer = place(10, 10, 10)
+    nested = outer.entities.add_group
+    nested.drift_bounds(4, 4, 4)
+    before = [nested.bounds.min.x, nested.bounds.width]
+    commits = model.commits
+
+    error = assert_raises(ArgumentError) do
+      @commands.execute(
+        'organize.rooms',
+        'rooms' => [{ 'name' => 'Kitchen', 'entity_ids' => [nested.persistent_id] }]
+      )
+    end
+
+    assert_match(/BLOCKs non-root/, error.message)
+    assert_equal before, [nested.bounds.min.x, nested.bounds.width]
+    assert_equal commits, model.commits
+  end
+
+  def test_assign_tag_refuses_a_raw_face_or_edge
+    face = model.entities.add_group
+    face.define_singleton_method(:typename) { 'Face' }
+    edge = model.entities.add_group
+    edge.define_singleton_method(:typename) { 'Edge' }
+    model.layers.add('Walls')
+
+    face_error = assert_raises(ArgumentError) do
+      @commands.execute('tags.assign', 'entity_id' => face.persistent_id, 'tag' => 'Walls')
+    end
+    edge_error = assert_raises(ArgumentError) do
+      @commands.execute('tags.assign', 'entity_id' => edge.persistent_id, 'tag' => 'Walls')
+    end
+
+    assert_match(/raw Face or Edge/, face_error.message)
+    assert_match(/raw Face or Edge/, edge_error.message)
+    refute_equal 'Walls', face.layer.name.to_s
+  end
+
+  def test_delete_commands_refuse_without_owner_approval
+    group = model.entities.add_group
+    model.pages.add('Shot 1')
+    model.layers.add('Walls')
+    commits = model.commits
+
+    erase_error = assert_raises(ArgumentError) do
+      @commands.execute('entity.erase', 'entity_ids' => [group.persistent_id])
+    end
+    scene_error = assert_raises(ArgumentError) do
+      @commands.execute('scenes.remove', 'name' => 'Shot 1')
+    end
+    tag_error = assert_raises(ArgumentError) do
+      @commands.execute('tags.remove', 'name' => 'Walls')
+    end
+
+    assert_match(/owner approval/, erase_error.message)
+    assert_match(/owner approval/, scene_error.message)
+    assert_match(/owner approval/, tag_error.message)
+    assert_equal commits, model.commits
+    assert_equal 1, model.entities.length
   end
 end

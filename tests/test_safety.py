@@ -131,3 +131,84 @@ def test_transform_has_no_scale_and_lengths_default_to_inches():
     assert transform["unit"]["default"] == "inches"
     assert by_name["add_box"]["input_schema"]["properties"]["unit"]["default"] == "inches"
     assert by_name["add_cylinder"]["input_schema"]["properties"]["unit"]["default"] == "inches"
+
+
+def test_skill_path_bypass_is_cleared_and_reload_refuses_bundled(monkeypatch):
+    from dcc_mcp_sketchup import safety
+
+    monkeypatch.setenv(
+        "DCC_MCP_SKILL_PATHS",
+        "/tmp/src/dcc-mcp-core/python/dcc_mcp_core/skills",
+    )
+    monkeypatch.setenv("DCC_MCP_DISABLE_DEFAULT_SKILL_PATHS", "0")
+    monkeypatch.setenv("DCC_MCP_DISABLE_ACCUMULATED_SKILLS", "0")
+    apply_lockdown()
+
+    assert "DCC_MCP_SKILL_PATHS" not in os.environ
+    assert os.environ["DCC_MCP_DISABLE_DEFAULT_SKILL_PATHS"] == "1"
+    assert os.environ["DCC_MCP_DISABLE_ACCUMULATED_SKILLS"] == "1"
+
+    server = SketchupMcpServer.__new__(SketchupMcpServer)
+    with pytest.raises(SafetyError, match="include_bundled must be false"):
+        server.reload_skill_paths()
+    with pytest.raises(SafetyError, match="outside this package"):
+        server.reload_skill_paths(
+            ["/tmp/src/dcc-mcp-core/python/dcc_mcp_core/skills"],
+            include_bundled=False,
+        )
+    with pytest.raises(SafetyError, match="allow-list"):
+        safety.assert_loaded_skill_names(["sketchup-session", "ui-control"])
+    safety.assert_loaded_skill_names(
+        ["sketchup-session", "sketchup-modeling", "sketchup-scenes", "diagnostics"]
+    )
+
+
+def test_webhooks_file_refuses_start(tmp_path, monkeypatch):
+    from dcc_mcp_sketchup import safety
+
+    owned = tmp_path / "etc"
+    owned.mkdir()
+    (owned / "webhooks.yaml").write_text("webhooks: []\n", encoding="utf-8")
+    monkeypatch.setattr(safety, "ETC_DIR", owned)
+    monkeypatch.setenv("DCC_MCP_ETC_DIR", str(tmp_path / "user-etc"))
+    monkeypatch.setenv("DCC_MCP_WEBHOOKS_CONFIG", str(owned / "webhooks.yaml"))
+
+    with pytest.raises(SafetyError, match="webhooks file is present"):
+        apply_lockdown()
+
+    assert "DCC_MCP_WEBHOOKS_CONFIG" not in os.environ
+
+
+def test_lockdown_points_etc_at_an_empty_adapter_folder(tmp_path, monkeypatch):
+    from dcc_mcp_sketchup import safety
+
+    owned = tmp_path / "empty-etc"
+    owned.mkdir()
+    monkeypatch.setattr(safety, "ETC_DIR", owned)
+    monkeypatch.setenv("DCC_MCP_ETC_DIR", str(tmp_path / "home-etc"))
+    apply_lockdown()
+
+    assert os.environ["DCC_MCP_ETC_DIR"] == str(owned)
+    assert list(owned.iterdir()) == []
+
+
+def test_protected_file_hash_detects_a_changed_byte(tmp_path):
+    from dcc_mcp_sketchup import safety
+
+    target = tmp_path / "fixture.txt"
+    target.write_bytes(b"synthetic-before")
+    digest = safety.sha256_file(target)
+    safety.assert_unchanged_hash(target, digest)
+    target.write_bytes(b"synthetic-after")
+    with pytest.raises(SafetyError, match="hash changed"):
+        safety.assert_unchanged_hash(target, digest)
+
+
+def test_dependency_lock_pins_core_with_hashes():
+    lock = (ROOT / "requirements.lock").read_text(encoding="utf-8")
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert "dcc-mcp-core==0.20.36" in lock
+    assert "dcc-mcp-core==0.20.36" in pyproject
+    assert "--hash=sha256:" in lock
+    assert lock.count("--hash=sha256:") >= 7
+

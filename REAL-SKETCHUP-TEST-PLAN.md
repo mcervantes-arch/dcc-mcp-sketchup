@@ -13,11 +13,11 @@ Use a new throwaway model. Do not open a client file, and do not save over any e
 
 ## Save
 
-5. Save the first copy as `Synthetic Safety v1.0.skp` inside the project folder. It must be a new file.
+5. Open a throwaway model named `JOB1_Synthetic_Model_v01.skp`. Save the next copy as `JOB1_Synthetic_Model_v02.skp` inside the project folder. The base name must match and the version must be higher. It must be a new file.
 6. Call `save_copy` again on that same path. It must refuse because the file exists, and the file bytes must be unchanged.
 7. Call `save_copy` with `overwrite: true`. It must refuse. There is no overwrite switch.
 8. Call `save_copy` with the path of the model that is already open. It must refuse, and the open model path must stay the same.
-9. Call `save_copy` as `model.skp` (no version in the name) and as a path outside the project folder. Both must refuse.
+9. Call `save_copy` as `model.skp` (no version in the name), as `JOB9_Other_Model_v02.skp` (different base name), and as a path outside the project folder. All three must refuse.
 10. Confirm there is no `model.save` command.
 
 ## Units, transform, materials
@@ -58,4 +58,4 @@ Build two groups and write down their persistent IDs.
 30. If a save target already exists, a path is outside the folder, or the host is not the approved machine, stop. Do not work around it.
 31. Edge-to-edge contact is a visual check on this throwaway model only: faces that should meet should meet, with no gap and no overlap. This adapter does not measure that. Record any gap as CANNOT VERIFY or BLOCK for the owner. Do not quietly move geometry to close it.
 
-Write the results next to this plan: each step PASS, FAIL, or CANNOT VERIFY, plus the `.skp` version path. Phineas reviews. Only the owner merges.
+Write the results next to this plan: each step PASS, FAIL, or CANNOT VERIFY, plus the `.skp` version path. Phineas reviews. Only Michelle merges.

@@ -25,8 +25,12 @@ from .doctor import doctor_report
 from .safety import (
     SafetyError,
     apply_lockdown,
+    assert_loaded_skill_names,
     assert_pinned_core,
+    assert_skill_path_allowed,
+    enforce_skill_lock,
     refuse_disabled_skill,
+    refuse_webhooks_file,
 )
 
 _server: Optional["SketchupMcpServer"] = None
@@ -137,21 +141,48 @@ class SketchupMcpServer(DccServerBase):
         """Load SketchUp skills only. Bundled core skills stay off.
 
         ``include_bundled=True`` is a request for ui-control, media, and
-        execute_python. That request is refused. Paths that name one of those
-        skills are refused too.
+        execute_python. That request is refused. Paths outside this package's
+        skills folder are refused too. Default skill paths are cleared so a
+        parent skills directory cannot bring the disabled skills back.
         """
         if include_bundled:
             raise SafetyError("disabled skills refused: ui-control, media, execute_python")
         extra = []
         for path in extra_skill_paths or []:
             refuse_disabled_skill(str(path))
+            assert_skill_path_allowed(str(path))
             extra.append(str(path))
         _refuse_disabled_skill_environment()
-        return super().register_builtin_actions(
+        enforce_skill_lock()
+        refuse_webhooks_file()
+        result = super().register_builtin_actions(
             extra_skill_paths=extra,
             include_bundled=False,
             minimal_mode=minimal_mode,
         )
+        assert_loaded_skill_names(_discovered_skill_names(self))
+        return result
+
+    def reload_skill_paths(self, extra_skill_paths=None, include_bundled=True):
+        """Refuse the core default of include_bundled=True.
+
+        Calling this with no arguments must not load bundled skills. Extra
+        paths have to sit inside this package's skills folder.
+        """
+        if include_bundled:
+            raise SafetyError(
+                "bundled skills refused: reload_skill_paths include_bundled must be false"
+            )
+        for path in extra_skill_paths or []:
+            assert_skill_path_allowed(str(path))
+        enforce_skill_lock()
+        refuse_webhooks_file()
+        result = super().reload_skill_paths(
+            extra_skill_paths=extra_skill_paths,
+            include_bundled=False,
+        )
+        assert_loaded_skill_names(_discovered_skill_names(self))
+        return result
 
 
 def _refuse_disabled_skill_environment() -> None:
@@ -164,6 +195,29 @@ def _refuse_disabled_skill_environment() -> None:
             text = part.strip()
             if text:
                 refuse_disabled_skill(text)
+
+
+def _discovered_skill_names(server: SketchupMcpServer) -> list:
+    """Names of skills the server has loaded, when the core object exposes them."""
+    inner = getattr(server, "_server", None)
+    if inner is None:
+        return []
+    for attr in ("skill_names", "list_skills", "skills"):
+        value = getattr(inner, attr, None)
+        if value is None:
+            continue
+        try:
+            listed = value() if callable(value) else value
+        except Exception:
+            continue
+        names = []
+        for item in listed or []:
+            if isinstance(item, str):
+                names.append(item)
+            else:
+                names.append(str(getattr(item, "name", item)))
+        return names
+    return []
 
 
 def start_server(

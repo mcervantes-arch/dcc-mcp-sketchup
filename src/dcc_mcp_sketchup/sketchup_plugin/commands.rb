@@ -24,29 +24,35 @@ module DccMcp
       }.freeze
       DEFAULT_UNIT = 'inches'
       PROJECT_FOLDER_ENV = 'DCC_MCP_SKETCHUP_PROJECT_FOLDER'
-      VERSIONED_SKP_NAME = /\A.+ v\d+\.\d+\.skp\z/
+      OWNER_APPROVAL_ENV = 'DCC_MCP_SKETCHUP_OWNER_APPROVAL'
+      # <JobID>_<Project>_Model_v<NN>.skp. JobID and Project do not contain underscores.
+      MODEL_FILE_NAME = /\A([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)_([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)_Model_v(\d+)\.skp\z/
       WALL_TOLERANCE_INCHES = 1.0 / 8.0
-      APPLIANCE_TOLERANCE_INCHES = 0.0
-      # Float noise only. It is far smaller than 1/32", so an appliance offset
+      PRODUCT_TOLERANCE_INCHES = 0.0
+      # Float noise only. It is far smaller than 1/32", so a product offset
       # of that size is still BLOCK. It is not a modelling tolerance.
       COMPARE_EPSILON_INCHES = 1e-9
       SPEC_AXES = %w[x y z width depth height].freeze
-      CATEGORY_FOLDERS = [
-        'Roof',
-        'Slab',
-        'Foundation',
-        'Walls – Exterior',
-        'Walls – Bedroom',
-        'Walls – Bathroom',
-        'Walls – Kitchen',
-        'Doors',
-        'Windows',
-        'Cabinetry',
-        'Appliances',
-        'Stairs',
-        'Site',
-        'Reference'
-      ].freeze
+      LENGTH_RESULT_KEYS = %w[bounds width depth height radius delta origin translation].freeze
+      DRAWING_KINDS = %w[wall opening].freeze
+      PRODUCT_KINDS = %w[appliance product package].freeze
+      # Folder names stay human. The tag inside each folder is the RenCo code.
+      CATEGORY_TAGS = {
+        'Roof' => 'A-ROOF',
+        'Slab' => 'A-SLAB',
+        'Foundation' => 'A-FNDN',
+        'Walls – Exterior' => 'A-WALL-EXT',
+        'Walls – Bedroom' => 'A-WALL-BED',
+        'Walls – Bathroom' => 'A-WALL-BATH',
+        'Walls – Kitchen' => 'A-WALL-KIT',
+        'Doors' => 'A-DOOR',
+        'Windows' => 'A-GLAZ',
+        'Cabinetry' => 'I-CABINETRY',
+        'Appliances' => 'I-APPL',
+        'Stairs' => 'A-STRS',
+        'Site' => 'L-SITE',
+        'Reference' => 'G-REF'
+      }.freeze
 
       def initialize
         @commands = {
@@ -91,9 +97,7 @@ module DccMcp
           raise 'SketchUp request expired before main-thread execution'
         end
         result = command.call(values)
-        if result.is_a?(Hash) && !result.key?('unit')
-          result = result.merge('unit' => DEFAULT_UNIT)
-        end
+        result = with_length_unit(result)
         result
       end
 
@@ -170,9 +174,9 @@ module DccMcp
         }
       end
 
-      # save_copy is the only save. It writes a new versioned path, refuses the
-      # source path, and refuses a path that already exists. There is no
-      # overwrite flag and no model.save-with-no-path.
+      # save_copy is the only save. The name is <JobID>_<Project>_Model_v<NN>.skp,
+      # the base name matches the source, and the version is strictly higher.
+      # There is no overwrite flag and no model.save-with-no-path.
       def save_copy(params)
         require_keys(params, %w[path], %w[path])
         path = versioned_project_file(params['path'])
@@ -180,7 +184,7 @@ module DccMcp
         if source && same_path?(path, source)
           raise ArgumentError, 'save_copy path must differ from the source path'
         end
-        raise ArgumentError, "save target already exists: #{path}" if File.exist?(path)
+        raise ArgumentError, "save target already exists: #{path}" if path_exists?(path)
 
         before_path = model.path.to_s
         result = model.save_copy(path)
@@ -189,7 +193,7 @@ module DccMcp
         checks = []
         Verification.check_file_written!('model.save_copy', checks, path)
         Verification.check!('model.save_copy', checks, 'source_path_unchanged', before_path, model.path.to_s)
-        { 'path' => path, 'saved' => true, 'current_model_path' => model.path.to_s, 'unit' => DEFAULT_UNIT }
+        { 'path' => path, 'saved' => true, 'current_model_path' => model.path.to_s }
           .merge(Verification.verified('model.save_copy', checks))
       end
 
@@ -228,7 +232,7 @@ module DccMcp
       def export_model(params)
         require_keys(params, %w[path options], %w[path])
         path = require_project_path(output_file(params['path'], 'path', EXPORT_EXTENSIONS), 'path')
-        raise ArgumentError, "save target already exists: #{path}" if File.exist?(path)
+        raise ArgumentError, "save target already exists: #{path}" if path_exists?(path)
         options = symbol_keyed_options(params.fetch('options', {}), 'options')
         result = options.empty? ? model.export(path) : model.export(path, options)
         raise "SketchUp export failed: #{path}" unless result
@@ -396,6 +400,7 @@ module DccMcp
       end
 
       def erase_entities(params)
+        require_owner_approval!('entity.erase')
         require_keys(params, %w[entity_ids], %w[entity_ids])
         entities = root_entities(params['entity_ids'])
         ids = entities.map { |item| persistent_id(item) }
@@ -439,7 +444,8 @@ module DccMcp
           'status' => aggregate_status(results.map { |item| item['status'] }),
           'unit' => DEFAULT_UNIT,
           'edited' => false,
-          'elements' => results
+          'elements' => results,
+          'contacts' => contact_findings(results)
         }
       end
 
@@ -459,8 +465,16 @@ module DccMcp
         raise ArgumentError, 'entity does not support attribute dictionaries' unless item.respond_to?(:set_attribute)
 
         dictionary = non_empty_string(params['dictionary'], 'dictionary')
+        raise ArgumentError, 'dictionary must be renco' unless dictionary == 'renco'
+
         key = non_empty_string(params['key'], 'key')
         value = attribute_value(params['value'])
+        if key == 'type'
+          existing = item.get_attribute('renco', 'type')
+          if !existing.nil? && existing.to_s != value.to_s && !owner_approved?
+            raise ArgumentError, 'renco/type is write-once without owner approval'
+          end
+        end
         checks = []
         with_operation('DCC-MCP Set Attribute') do
           item.set_attribute(dictionary, key, value)
@@ -471,8 +485,7 @@ module DccMcp
           'entity_id' => persistent_id(item),
           'dictionary' => dictionary,
           'key' => key,
-          'value' => value,
-          'unit' => DEFAULT_UNIT
+          'value' => value
         }.merge(Verification.verified('attributes.set', checks))
       end
 
@@ -482,9 +495,9 @@ module DccMcp
         checks = []
         created = []
         with_operation('DCC-MCP Category Folders') do
-          CATEGORY_FOLDERS.each do |name|
+          CATEGORY_TAGS.each do |name, code|
             folder = find_folder(name) || model.layers.add_folder(name)
-            tag = find_tag(name, false) || model.layers.add(name)
+            tag = find_tag(code, false) || model.layers.add(code)
             raise ArgumentError, 'tag does not support folders' unless tag.respond_to?(:folder=)
 
             tag.folder = folder
@@ -492,7 +505,7 @@ module DccMcp
               'organize.categories', checks, "tag_folder_#{name}", name,
               tag.folder ? tag.folder.name.to_s : nil
             )
-            created << { 'folder' => name, 'tag' => name }
+            created << { 'folder' => name, 'tag' => code }
           end
           assert_geometry_unmoved!('organize.categories', checks, before)
         end
@@ -503,6 +516,9 @@ module DccMcp
         }.merge(Verification.verified('organize.categories', checks))
       end
 
+      # Non-root entities are refused before anything moves. The LEVEL /
+      # 00_REFERENCE..05 hierarchy is the manual modelling standard; this
+      # command does not build it.
       def organize_rooms(params)
         require_keys(params, %w[rooms], %w[rooms])
         rooms = params['rooms']
@@ -518,7 +534,13 @@ module DccMcp
           end
         end
         before = {}
-        membership.each_key { |identifier| before[identifier] = bounds_snapshot(entity(identifier)) }
+        membership.each_key do |identifier|
+          item = entity(identifier)
+          unless model.entities.to_a.include?(item)
+            raise ArgumentError, 'organize.rooms BLOCKs non-root entities; nested parents are not regrouped'
+          end
+          before[identifier] = bounds_snapshot(item)
+        end
         checks = []
         grouped = []
         shared = []
@@ -543,6 +565,8 @@ module DccMcp
               shared << { 'room' => room_name, 'entity_id' => identifier, 'rooms' => names, 'split' => false }
             end
           end
+          # add_group(existing) can invalidate the references captured above,
+          # so the after-check looks the entities up again by persistent id.
           membership.each_key do |identifier|
             Verification.check!(
               'organize.rooms', checks, "bounds_unchanged_#{identifier}",
@@ -616,6 +640,7 @@ module DccMcp
       end
 
       def remove_scene(params)
+        require_owner_approval!('scenes.remove')
         require_keys(params, %w[name], %w[name])
         page = find_scene(params['name'])
         name = page.name.to_s
@@ -655,6 +680,9 @@ module DccMcp
       def assign_tag(params)
         require_keys(params, %w[entity_id tag], %w[entity_id tag])
         item = entity(params['entity_id'])
+        if %w[Face Edge].include?(item.typename.to_s)
+          raise ArgumentError, 'tags.assign refuses a raw Face or Edge'
+        end
         tag = find_tag(params['tag'])
         raise ArgumentError, 'entity does not support tags' unless item.respond_to?(:layer=)
 
@@ -668,6 +696,7 @@ module DccMcp
       end
 
       def remove_tag(params)
+        require_owner_approval!('tags.remove')
         require_keys(params, %w[name], %w[name])
         tag = find_tag(params['name'])
         raise ArgumentError, 'the default Untagged tag cannot be removed' if tag == model.layers[0]
@@ -994,12 +1023,35 @@ module DccMcp
 
       def versioned_project_file(value)
         path = require_project_path(output_file(value, 'path', ['.skp']), 'path')
-        base = File.basename(path)
-        unless VERSIONED_SKP_NAME.match?(base)
-          raise ArgumentError, 'path must be a new versioned .skp name: <name> v<major>.<minor>.skp'
+        parsed = parse_model_name(File.basename(path))
+        unless parsed
+          raise ArgumentError, 'path must be <JobID>_<Project>_Model_v<NN>.skp'
+        end
+
+        source = current_model_path
+        if source.nil? || source.empty?
+          raise ArgumentError, 'save_copy needs a named source model'
+        end
+
+        source_parsed = parse_model_name(File.basename(source))
+        unless source_parsed
+          raise ArgumentError, 'source model name must be <JobID>_<Project>_Model_v<NN>.skp'
+        end
+        unless parsed[:job] == source_parsed[:job] && parsed[:project] == source_parsed[:project]
+          raise ArgumentError, 'save_copy base name must match the source model'
+        end
+        unless parsed[:version] > source_parsed[:version]
+          raise ArgumentError, 'save_copy version must be strictly higher than the source'
         end
 
         path
+      end
+
+      def parse_model_name(base)
+        match = MODEL_FILE_NAME.match(base.to_s)
+        return nil unless match
+
+        { job: match[1], project: match[2], version: match[3].to_i }
       end
 
       def project_root
@@ -1017,13 +1069,64 @@ module DccMcp
       def require_project_path(path, name)
         root = project_root
         candidate = File.expand_path(path)
+        if symlink_path?(candidate)
+          raise ArgumentError, "#{name} is a symlink; refusing: #{candidate}"
+        end
+        if path_exists?(candidate)
+          real = File.realpath(candidate)
+          unless path_inside?(real, root)
+            raise ArgumentError, "#{name} is outside the project folder: #{candidate}"
+          end
+        end
         parent = File.dirname(candidate)
-        real_parent = File.exist?(parent) ? File.realpath(parent) : parent
+        real_parent = path_exists?(parent) ? File.realpath(parent) : parent
         unless path_inside?(real_parent, root)
           raise ArgumentError, "#{name} is outside the project folder: #{candidate}"
         end
 
         candidate
+      end
+
+      def symlink_path?(path)
+        File.lstat(path).symlink?
+      rescue Errno::ENOENT, SystemCallError
+        false
+      end
+
+      def path_exists?(path)
+        File.lstat(path)
+        true
+      rescue Errno::ENOENT
+        false
+      end
+
+      def owner_approved?
+        ENV.fetch(OWNER_APPROVAL_ENV, '').to_s == '1'
+      end
+
+      def require_owner_approval!(action)
+        return if owner_approved?
+
+        raise ArgumentError, "#{action} requires owner approval; set #{OWNER_APPROVAL_ENV}=1"
+      end
+
+      def with_length_unit(result)
+        return result unless result.is_a?(Hash)
+        return result if result.key?('unit')
+        return result unless contains_length?(result)
+
+        result.merge('unit' => DEFAULT_UNIT)
+      end
+
+      def contains_length?(value)
+        case value
+        when Hash
+          value.any? { |key, item| LENGTH_RESULT_KEYS.include?(key.to_s) || contains_length?(item) }
+        when Array
+          value.any? { |item| contains_length?(item) }
+        else
+          false
+        end
       end
 
       def path_inside?(path, root)
@@ -1041,20 +1144,25 @@ module DccMcp
 
         identifier = integer(element['id'], 'id', 1)
         type_name = non_empty_string(element['type'], 'type').downcase
-        unless %w[wall appliance].include?(type_name)
-          raise ArgumentError, 'type must be wall or appliance'
+        unless (DRAWING_KINDS + PRODUCT_KINDS).include?(type_name)
+          raise ArgumentError, 'type must be wall, opening, appliance, product, or package'
         end
         if element.key?('unit') && element['unit'].to_s.downcase != DEFAULT_UNIT
           raise ArgumentError, 'validate_spec lengths must be inches'
         end
 
-        specified = {}
-        SPEC_AXES.each do |axis|
-          raise ArgumentError, "element #{identifier} is missing #{axis}" unless element.key?(axis)
-
-          specified[axis] = number(element[axis], axis)
+        tolerance = DRAWING_KINDS.include?(type_name) ? WALL_TOLERANCE_INCHES : PRODUCT_TOLERANCE_INCHES
+        missing_axes = SPEC_AXES.reject { |axis| element.key?(axis) }
+        unless missing_axes.empty?
+          return cannot_verify(
+            identifier, type_name, tolerance,
+            "missing axes: #{missing_axes.join(', ')}",
+            missing_axes
+          )
         end
-        tolerance = type_name == 'wall' ? WALL_TOLERANCE_INCHES : APPLIANCE_TOLERANCE_INCHES
+
+        specified = {}
+        SPEC_AXES.each { |axis| specified[axis] = number(element[axis], axis) }
         found = model.find_entity_by_persistent_id(identifier)
         found = found.first if found.is_a?(Array)
         missing = found.nil? || (found.respond_to?(:valid?) && !found.valid?)
@@ -1070,6 +1178,11 @@ module DccMcp
             'delta' => nil,
             'reason' => 'entity was not found'
           }
+        end
+
+        problem = placement_problem(found)
+        unless problem.nil?
+          return cannot_verify(identifier, type_name, tolerance, problem, [], specified)
         end
 
         available = available_geometry(found)
@@ -1096,11 +1209,96 @@ module DccMcp
         }
       end
 
+      def cannot_verify(identifier, type_name, tolerance, reason, missing_axes, specified = {})
+        {
+          'id' => identifier,
+          'type' => type_name,
+          'status' => 'CANNOT VERIFY',
+          'unit' => DEFAULT_UNIT,
+          'tolerance_inches' => tolerance,
+          'specified' => specified.merge('type' => type_name),
+          'available' => nil,
+          'delta' => nil,
+          'missing_axes' => missing_axes,
+          'reason' => reason
+        }
+      end
+
+      def placement_problem(item)
+        return 'entity is nested' unless model.entities.to_a.include?(item)
+        return nil unless item.respond_to?(:transformation)
+
+        transformation = item.transformation
+        return nil if transformation.nil?
+        return 'entity is rotated' unless world_aligned?(transformation)
+
+        nil
+      end
+
+      def world_aligned?(transformation)
+        return true unless transformation.respond_to?(:xaxis)
+
+        [transformation.xaxis, transformation.yaxis, transformation.zaxis].all? do |axis|
+          axis_aligned_vector?(axis)
+        end
+      end
+
+      def axis_aligned_vector?(axis)
+        return false unless axis.respond_to?(:x) && axis.respond_to?(:y) && axis.respond_to?(:z)
+
+        components = [axis.x.to_f, axis.y.to_f, axis.z.to_f]
+        components.count { |value| value.abs > COMPARE_EPSILON_INCHES } == 1
+      end
+
       def aggregate_status(statuses)
         return 'BLOCK' if statuses.include?('BLOCK')
         return 'MISMATCH' if statuses.include?('MISMATCH')
+        return 'CANNOT VERIFY' if statuses.include?('CANNOT VERIFY')
 
         'MATCH'
+      end
+
+      def contact_findings(results)
+        usable = results.select { |item| item['available'].is_a?(Hash) && item['status'] != 'CANNOT VERIFY' }
+        findings = []
+        usable.each_with_index do |left, index|
+          usable[(index + 1)..-1].each do |right|
+            findings << classify_contact(left, right)
+          end
+        end
+        findings
+      end
+
+      def classify_contact(left, right)
+        gap = axis_gaps(left['available'], right['available'])
+        positive = gap.values.any? { |value| value > COMPARE_EPSILON_INCHES }
+        negative = gap.values.count { |value| value < -COMPARE_EPSILON_INCHES }
+        relation = if positive
+                     'gap'
+                   elsif negative == 3
+                     'overlap'
+                   else
+                     'contact'
+                   end
+        {
+          'left_id' => left['id'],
+          'right_id' => right['id'],
+          'relation' => relation,
+          'gap_inches' => gap,
+          'edited' => false
+        }
+      end
+
+      def axis_gaps(left, right)
+        {
+          'x' => edge_gap(left['x'], left['width'], right['x'], right['width']),
+          'y' => edge_gap(left['y'], left['depth'], right['y'], right['depth']),
+          'z' => edge_gap(left['z'], left['height'], right['z'], right['height'])
+        }
+      end
+
+      def edge_gap(origin_a, size_a, origin_b, size_b)
+        [origin_a - (origin_b + size_b), origin_b - (origin_a + size_a)].max
       end
 
       def available_geometry(item)

@@ -229,9 +229,9 @@ def doctor_report(verb: str = "doctor", timeout: float = 30.0) -> dict[str, Any]
         "minimum": MIN_CORE_VERSION,
     }
     if not core_compatible:
-        reason = (
-            "dcc-mcp-core %s is not the pinned version %s; refusing to continue"
-            % (running_core_version, PINNED_CORE_VERSION)
+        reason = "dcc-mcp-core %s is not the pinned version %s; refusing to continue" % (
+            running_core_version,
+            PINNED_CORE_VERSION,
         )
         steps.append({"id": "validate-core", "status": "failed", "message": reason})
         return _report(

@@ -154,7 +154,8 @@ dcc-mcp-sketchup uninstall --dcc-path "C:/Program Files/SketchUp/SketchUp 2026/S
 | `sketchup-scenes` | scenes, Tags, category folders, room groups |
 
 Lengths default to inches. Import and export stay inside `DCC_MCP_SKETCHUP_PROJECT_FOLDER`.
-`save_copy` requires a new `<name> v<major>.<minor>.skp` and refuses an existing
+`save_copy` requires `<JobID>_<Project>_Model_v<NN>.skp` with the same base name
+as the source and a strictly higher version, and refuses an existing
 file. There is no overwrite. The default Untagged Tag is never removable.
 
 ## Host support (doctor)

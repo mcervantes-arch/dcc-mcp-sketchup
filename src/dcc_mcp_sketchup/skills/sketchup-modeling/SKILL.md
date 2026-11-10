@@ -5,7 +5,7 @@ description: >-
   Use for primitives, grouping, transforms, naming, selection, and explicit
   erasure. Use sketchup-session first to discover persistent entity IDs.
 license: MIT
-compatibility: "SketchUp 2021+; external sidecar Python 3.9+; dcc-mcp-core 0.20.36+"
+compatibility: "SketchUp 2021+; external sidecar Python 3.9+; dcc-mcp-core 0.20.36"
 allowed-tools: Python
 metadata:
   dcc-mcp:
@@ -21,5 +21,6 @@ metadata:
 # SketchUp Modeling
 
 All geometry mutations execute on SketchUp's UI thread inside one named undo
-operation. Length inputs declare a unit; returned native bounds are identified
-as inches. Entity editing uses persistent IDs from `list_entities`.
+operation. Length inputs default to inches and say the unit; outputs say
+inches. Transform moves and rotates only. Scale is rejected. Entity editing
+uses persistent IDs from `list_entities`.

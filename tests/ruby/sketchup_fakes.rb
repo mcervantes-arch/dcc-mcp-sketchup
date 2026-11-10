@@ -75,11 +75,12 @@ module Sketchup
   end
 
   class Layer
-    attr_accessor :name
+    attr_accessor :name, :folder
 
     def initialize(name)
       @name = name
       @visible = true
+      @folder = nil
     end
 
     def visible?
@@ -207,6 +208,54 @@ class FakeFace
   end
 end
 
+module FakeEntityAttributes
+  def set_attribute(dictionary, key, value)
+    store = (@attribute_store ||= {})
+    bucket = (store[dictionary.to_s] ||= {})
+    bucket[key.to_s] = value
+    value
+  end
+
+  def get_attribute(dictionary, key, default = nil)
+    store = @attribute_store || {}
+    bucket = store[dictionary.to_s] || {}
+    return default unless bucket.key?(key.to_s)
+
+    bucket[key.to_s]
+  end
+
+  def attribute_dictionaries
+    store = @attribute_store || {}
+    store.keys
+  end
+
+  def attribute_dictionary_dump
+    store = @attribute_store || {}
+    store.each_with_object({}) do |(name, pairs), copy|
+      copy[name] = pairs.dup
+    end
+  end
+end
+
+class FakeLayerFolder
+  attr_reader :name, :layers
+
+  def initialize(name)
+    @name = name
+    @layers = []
+  end
+end
+
+class FakeComponentDefinition
+  attr_accessor :name
+  attr_reader :entities
+
+  def initialize(name)
+    @name = name
+    @entities = FakeGroupEntities.new(self)
+  end
+end
+
 class FakeGroupEntities
   attr_reader :face
 
@@ -214,6 +263,18 @@ class FakeGroupEntities
     @group = group
     @values = []
     @circle_points = []
+  end
+
+  def add_group(*members)
+    group = FakeGroup.new
+    group.model = @group.respond_to?(:model) ? @group.model : nil
+    members.flatten.each do |entity|
+      @values.delete(entity)
+      group.entities << entity
+    end
+    group.model.register(group) if group.model
+    @values << group
+    group
   end
 
   def add_face(argument)
@@ -256,7 +317,8 @@ class FakeLayer
 end
 
 class FakeGroup
-  attr_accessor :name, :material, :back_material, :layer
+  include FakeEntityAttributes
+  attr_accessor :name, :material, :back_material, :layer, :model
   attr_reader :entities
 
   def initialize(members = [])
@@ -382,7 +444,13 @@ class FakeEntities < FakeCollection
   # entity -- without this the member count read-back compares a nested array
   # against a flat one and reports a mismatch that is an artifact of the fake.
   def add_group(*members)
-    group = FakeGroup.new(members.flatten)
+    flat = members.flatten
+    group = FakeGroup.new
+    group.model = @model
+    flat.each do |entity|
+      @values.delete(entity)
+      group.entities << entity
+    end
     @model.register(group)
     @values << group
     group
@@ -443,13 +511,65 @@ class FakePages < FakeCollection
   end
 end
 
+class FakeComponentInstance
+  include FakeEntityAttributes
+  attr_accessor :name, :material, :back_material, :layer
+  attr_reader :definition
+
+  def initialize(definition)
+    @definition = definition
+    @name = definition.name
+    @bounds = FakeBounds.new(1, 1, 1)
+    @valid = true
+    @material = nil
+    @back_material = nil
+    @layer = FakeLayer.new
+  end
+
+  def persistent_id
+    @id ||= FakeIds.next
+  end
+
+  def entityID
+    persistent_id + 1
+  end
+
+  def typename
+    'ComponentInstance'
+  end
+
+  def valid?
+    @valid
+  end
+
+  def hidden?
+    false
+  end
+
+  def locked?
+    false
+  end
+
+  def bounds
+    @bounds
+  end
+end
+
 class FakeLayers < FakeCollection
   attr_accessor :remove_result
+  attr_reader :folders
 
   def initialize
     super
     @remove_result = true
+    @folders = []
     @values << Sketchup::Layer.new('Untagged')
+  end
+
+  def add_folder(name)
+    folder = FakeLayerFolder.new(name)
+    @folders << folder
+    folder
   end
 
   def add(name)

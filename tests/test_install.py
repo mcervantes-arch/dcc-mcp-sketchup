@@ -30,10 +30,14 @@ def test_core_install_contract_floor_is_projected_everywhere():
     assert floor == "0.20.36"
 
     for path in (ROOT / "pyproject.toml", ROOT / "README.md", ROOT / "install.md"):
-        assert f"dcc-mcp-core>={floor},<1.0.0" in path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
+        assert f"dcc-mcp-core=={floor}" in text
+        assert f"dcc-mcp-core>={floor}" not in text
 
     for skill_path in sorted((ROOT / "src" / "dcc_mcp_sketchup" / "skills").glob("*/SKILL.md")):
-        assert f"dcc-mcp-core {floor}+" in skill_path.read_text(encoding="utf-8")
+        text = skill_path.read_text(encoding="utf-8")
+        assert f"dcc-mcp-core {floor}" in text
+        assert f"dcc-mcp-core {floor}+" not in text
 
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert f'CORE_INSTALL_SOP_VERSION: "{floor}"' in workflow

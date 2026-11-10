@@ -81,7 +81,9 @@
         "entity.rename",
         "entity.erase",
         "entity.select",
-        "materials.assign",
+        "attributes.set",
+        "model.validate_spec",
+        "organize.rooms",
         "tags.assign"
       ],
       "required": true,
@@ -165,16 +167,6 @@
       "role": "mutation"
     },
     {
-      "owner": "Sketchup::Material",
-      "symbol": "alpha=",
-      "used_by": [
-        "materials.create",
-        "materials.update"
-      ],
-      "required": true,
-      "role": "mutation"
-    },
-    {
       "owner": "Sketchup::Page",
       "symbol": "include_in_animation=",
       "used_by": [
@@ -184,6 +176,41 @@
       "required": false,
       "role": "mutation",
       "note": "Guarded by respond_to? because the accessor is absent on older builds; a missing symbol is reported by the probe instead of failing the call."
+    },
+    {
+      "owner": "Sketchup::Layers",
+      "symbol": "add_folder",
+      "used_by": ["organize.categories"],
+      "required": true,
+      "role": "mutation"
+    },
+    {
+      "owner": "Sketchup::Layers",
+      "symbol": "folders",
+      "used_by": ["organize.categories"],
+      "required": true,
+      "role": "read-back"
+    },
+    {
+      "owner": "Sketchup::Layer",
+      "symbol": "folder=",
+      "used_by": ["organize.categories"],
+      "required": true,
+      "role": "mutation"
+    },
+    {
+      "owner": "Sketchup::Entity",
+      "symbol": "set_attribute",
+      "used_by": ["attributes.set", "organize.rooms"],
+      "required": true,
+      "role": "mutation"
+    },
+    {
+      "owner": "Sketchup::Entity",
+      "symbol": "attribute_dictionaries",
+      "used_by": ["attributes.set", "model.outliner"],
+      "required": true,
+      "role": "read-back"
     }
   ],
   "breaking_changes": [
@@ -204,7 +231,7 @@
       "symptom": "The API returns an entity array in some builds and a truthy count in others, so a caller that branches on the return value can report success for a transform that never applied.",
       "adapter_usage": "guarded",
       "enforcement": "postcondition",
-      "remediation": "entity.transform no longer trusts the return value. It records the entity bounds centre before the call and reads it back afterwards, requiring the centre to have moved by the requested translation. Rotation and scaling are applied about the entity centre, which leaves the centre invariant, so the translation is the only component the centre must reflect."
+      "remediation": "entity.transform no longer trusts the return value. It records the entity bounds centre before the call and reads it back afterwards, requiring the centre to have moved by the requested translation. Rotation is applied about the entity centre, which leaves the centre invariant, so the translation is the only component the centre must reflect. Scale is rejected."
     },
     {
       "id": "material-alpha-silently-dropped",
@@ -223,7 +250,7 @@
       "symptom": "The setter exists and raises nothing, so a caller sees 'material updated' while the alpha is unchanged and the render is wrong.",
       "adapter_usage": "guarded",
       "enforcement": "postcondition",
-      "remediation": "materials.create and materials.update read alpha back and report expected versus actual, naming the host product year."
+      "remediation": "The materials commands are not part of this adapter, so it does not call Material#alpha=."
     },
     {
       "id": "pushpull-degenerate-geometry",

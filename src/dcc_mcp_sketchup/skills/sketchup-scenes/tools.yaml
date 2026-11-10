@@ -122,3 +122,45 @@ tools:
     enforce_thread_affinity: true
     timeout_hint_secs: 30
     annotations: {read_only_hint: false, destructive_hint: true, idempotent_hint: false, open_world_hint: false, deferred_hint: false}
+
+  - name: organize_categories
+    description: Ensure category tag folders (Roof, Slab, Walls – Bedroom, and the rest of the category list) and a tag in each folder. Does not move geometry. Proves that with a before/after bounds check.
+    source_file: scripts/organize_categories.py
+    input_schema: {type: object, properties: {}, additionalProperties: false}
+    output_schema: {type: object}
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    timeout_hint_secs: 30
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: true, open_world_hint: false, deferred_hint: false}
+
+  - name: organize_rooms
+    description: Place single-room entities in a named room group and log shared entities under every room without splitting or moving them. Bounds are checked before and after.
+    source_file: scripts/organize_rooms.py
+    input_schema:
+      type: object
+      required: [rooms]
+      properties:
+        rooms:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items:
+            type: object
+            required: [name, entity_ids]
+            properties:
+              name: {type: string, minLength: 1}
+              entity_ids:
+                type: array
+                minItems: 1
+                maxItems: 500
+                uniqueItems: true
+                items: {type: integer, minimum: 1}
+            additionalProperties: false
+      additionalProperties: false
+    output_schema: {type: object}
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    timeout_hint_secs: 30
+    annotations: {read_only_hint: false, destructive_hint: false, idempotent_hint: false, open_world_hint: false, deferred_hint: false}

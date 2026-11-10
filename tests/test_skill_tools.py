@@ -378,6 +378,6 @@ def test_every_mutating_tool_wraps_its_bridge_call(monkeypatch):
     assert probed.count("bridge.health") == 1
 
 
-@pytest.mark.parametrize("method", ["geometry.add_box", "materials.create"])
+@pytest.mark.parametrize("method", ["geometry.add_box", "attributes.set"])
 def test_mutating_tools_are_classified_as_mutating(method):
     assert skill_tools.classify(method) == skill_tools.MUTATING

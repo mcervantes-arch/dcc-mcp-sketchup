@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Optional, Sequence
 
 from dcc_mcp_core import DccServerOptions, HostExecutionBridge
+from dcc_mcp_core import __version__ as running_core_version
 from dcc_mcp_core.host import QueueDispatcher, StandaloneHost
 from dcc_mcp_core.readiness import AdapterReadinessBinder
 from dcc_mcp_core.server_base import DccServerBase
@@ -21,6 +22,16 @@ from . import install as install_lifecycle
 from .__version__ import __version__
 from .dispatcher import SketchupBridgeDispatcher
 from .doctor import doctor_report
+from .safety import (
+    SafetyError,
+    apply_lockdown,
+    assert_loaded_skill_names,
+    assert_pinned_core,
+    assert_skill_path_allowed,
+    enforce_skill_lock,
+    refuse_disabled_skill,
+    refuse_webhooks_file,
+)
 
 _server: Optional["SketchupMcpServer"] = None
 
@@ -32,6 +43,9 @@ class SketchupMcpServer(DccServerBase):
         resolved_pid = host_pid or int(os.environ.get("DCC_MCP_SKETCHUP_HOST_PID", "0"))
         if resolved_pid <= 0:
             raise ValueError("A live SketchUp host PID is required")
+        apply_lockdown()
+        assert_pinned_core(running_core_version)
+        _refuse_disabled_skill_environment()
 
         self._host_dispatcher = QueueDispatcher()
         self._host_driver = StandaloneHost(
@@ -56,6 +70,9 @@ class SketchupMcpServer(DccServerBase):
             dcc_version=os.environ.get("DCC_MCP_SKETCHUP_VERSION"),
             instance_type="gui",
             execution_bridge=execution_bridge,
+            enable_telemetry=False,
+            gateway_port=0,
+            enable_gateway_failover=False,
         )
         super().__init__(options=options)
         self._readiness = AdapterReadinessBinder(self)
@@ -117,6 +134,90 @@ class SketchupMcpServer(DccServerBase):
 
     def _version_string(self) -> str:
         return os.environ.get("DCC_MCP_SKETCHUP_VERSION", "unknown")
+
+    def register_builtin_actions(
+        self, extra_skill_paths=None, include_bundled=False, minimal_mode=None
+    ):
+        """Load SketchUp skills only. Bundled core skills stay off.
+
+        ``include_bundled=True`` is a request for ui-control, media, and
+        execute_python. That request is refused. Paths outside this package's
+        skills folder are refused too. Default skill paths are cleared so a
+        parent skills directory cannot bring the disabled skills back.
+        """
+        if include_bundled:
+            raise SafetyError("disabled skills refused: ui-control, media, execute_python")
+        extra = []
+        for path in extra_skill_paths or []:
+            refuse_disabled_skill(str(path))
+            assert_skill_path_allowed(str(path))
+            extra.append(str(path))
+        _refuse_disabled_skill_environment()
+        enforce_skill_lock()
+        refuse_webhooks_file()
+        result = super().register_builtin_actions(
+            extra_skill_paths=extra,
+            include_bundled=False,
+            minimal_mode=minimal_mode,
+        )
+        assert_loaded_skill_names(_discovered_skill_names(self))
+        return result
+
+    def reload_skill_paths(self, extra_skill_paths=None, include_bundled=True):
+        """Refuse the core default of include_bundled=True.
+
+        Calling this with no arguments must not load bundled skills. Extra
+        paths have to sit inside this package's skills folder.
+        """
+        if include_bundled:
+            raise SafetyError(
+                "bundled skills refused: reload_skill_paths include_bundled must be false"
+            )
+        for path in extra_skill_paths or []:
+            assert_skill_path_allowed(str(path))
+        enforce_skill_lock()
+        refuse_webhooks_file()
+        result = super().reload_skill_paths(
+            extra_skill_paths=extra_skill_paths,
+            include_bundled=False,
+        )
+        assert_loaded_skill_names(_discovered_skill_names(self))
+        return result
+
+
+def _refuse_disabled_skill_environment() -> None:
+    """Fail closed when the process environment points at a disabled skill."""
+    for key, value in os.environ.items():
+        upper = key.upper()
+        if "SKILL_PATH" not in upper:
+            continue
+        for part in value.split(os.pathsep):
+            text = part.strip()
+            if text:
+                refuse_disabled_skill(text)
+
+
+def _discovered_skill_names(server: SketchupMcpServer) -> list:
+    """Names of skills the server has loaded, when the core object exposes them."""
+    inner = getattr(server, "_server", None)
+    if inner is None:
+        return []
+    for attr in ("skill_names", "list_skills", "skills"):
+        value = getattr(inner, attr, None)
+        if value is None:
+            continue
+        try:
+            listed = value() if callable(value) else value
+        except Exception:
+            continue
+        names = []
+        for item in listed or []:
+            if isinstance(item, str):
+                names.append(item)
+            else:
+                names.append(str(getattr(item, "name", item)))
+        return names
+    return []
 
 
 def start_server(

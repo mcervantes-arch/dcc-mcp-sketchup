@@ -218,43 +218,4 @@ class VerificationTest < Minitest::Test
       assert_equal false, @checks[1]['actual']
     end
   end
-
-  def test_material_check_reads_back_only_the_supplied_values
-    # A read-back that demanded defaults would fail on any host that fills them
-    # differently, so only the fields the caller supplied are asserted.
-    model = Sketchup.active_model
-    model.materials.add('Brick')
-
-    assert_raises(DccMcp::SketchupAdapter::VerificationFailure) do
-      verification.check_material!('tool', @checks, model, 'Brick', 'color' => [1, 2, 3])
-    end
-
-    assert_equal %w[material_present material_color], @checks.map { |check| check['check'] }
-    assert_equal [1, 2, 3], @checks[1]['expected']
-    assert_equal [0, 0, 0], @checks[1]['actual']
-  end
-
-  def test_material_check_reports_a_missing_material
-    assert_raises(DccMcp::SketchupAdapter::VerificationFailure) do
-      verification.check_material!('tool', @checks, Sketchup.active_model, 'Nope', {})
-    end
-
-    assert_equal 'material_present', @checks[0]['check']
-    assert_equal 'Nope', @checks[0]['expected']
-    assert_nil @checks[0]['actual']
-  end
-
-  def test_material_texture_check_compares_presence_not_path
-    # SketchUp normalises texture paths per platform, so an exact string match
-    # would fail on separator or case differences while the texture was in fact
-    # applied correctly.
-    model = Sketchup.active_model
-    material = model.materials.add('Brick')
-    material.texture = 'C:/textures/brick.png'
-
-    verification.check_material_texture!('tool', @checks, model, 'Brick')
-
-    assert_equal 'material_texture', @checks[0]['check']
-    assert_equal true, @checks[0]['actual']
-  end
 end

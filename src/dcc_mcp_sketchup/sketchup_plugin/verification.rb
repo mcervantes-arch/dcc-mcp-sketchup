@@ -182,9 +182,9 @@ module DccMcp
         def check_center_moved!(tool, checks, entity, before, translation)
           return unless entity.respond_to?(:bounds)
 
-          # Rotation and scaling are applied about the entity centre, which
-          # leaves the centre invariant, so translation is the only component
-          # the centre must reflect after the transform.
+          # Rotation is applied about the entity centre, which leaves the centre
+          # invariant, so translation is the only component the centre must
+          # reflect after the transform. Scale is not part of the command.
           expected = [
             before[0] + translation[0].to_f,
             before[1] + translation[1].to_f,
@@ -214,32 +214,6 @@ module DccMcp
           check!(tool, checks, 'file_non_empty', true, size.positive?)
         end
 
-        def check_material!(tool, checks, model, expected_name, expected_values)
-          material = model.materials.find { |item| item.name.to_s == expected_name }
-          check!(tool, checks, 'material_present', expected_name, material ? expected_name : nil)
-          return if material.nil?
-
-          expected_values.each do |key, expected|
-            actual = read_material_value(material, key)
-            check!(tool, checks, "material_#{key}", expected, actual)
-          end
-        end
-
-        # Texture presence only. The recorded filename is deliberately not
-        # compared: SketchUp normalises texture paths per platform, so an exact
-        # string match would fail on Windows separators or a case difference
-        # while the texture was in fact applied correctly.
-        def check_material_texture!(tool, checks, model, expected_name, expected_present = true)
-          material = model.materials.find { |item| item.name.to_s == expected_name }
-          actual = !material.nil? && material.respond_to?(:texture) && !material.texture.nil?
-          check!(tool, checks, 'material_texture', expected_present, actual)
-        end
-
-        def check_material_absent!(tool, checks, model, expected_name)
-          found = model.materials.any? { |item| item.name.to_s == expected_name }
-          check!(tool, checks, 'material_absent', false, found)
-        end
-
         def check_scene!(tool, checks, model, expected_name, expected_description = nil)
           page = model.pages.find { |item| item.name.to_s == expected_name }
           check!(tool, checks, 'scene_present', expected_name, page ? expected_name : nil)
@@ -266,15 +240,6 @@ module DccMcp
           check!(tool, checks, 'tag_absent', false, found)
         end
 
-        def check_assigned_material!(tool, checks, entity, material, side)
-          if %w[front both].include?(side)
-            check!(tool, checks, 'entity_material', material.name.to_s, front_material_name(entity))
-          end
-          return unless %w[back both].include?(side)
-
-          check!(tool, checks, 'entity_back_material', material.name.to_s, back_material_name(entity))
-        end
-
         def check_assigned_tag!(tool, checks, entity, tag)
           actual = entity.respond_to?(:layer) && entity.layer ? entity.layer.name.to_s : nil
           check!(tool, checks, 'entity_tag', tag.name.to_s, actual)
@@ -296,32 +261,6 @@ module DccMcp
 
           delta = (left - right).abs
           delta <= [left.abs, right.abs].max * REL_TOLERANCE || delta <= ABS_TOLERANCE
-        end
-
-        def read_material_value(material, key)
-          case key
-          when 'color'
-            return nil unless material.respond_to?(:color) && material.color
-
-            color = material.color
-            [color.red, color.green, color.blue]
-          when 'alpha'
-            material.respond_to?(:alpha) ? material.alpha.to_f : nil
-          when 'texture_path'
-            material.respond_to?(:texture) && material.texture ? material.texture.filename.to_s : nil
-          else
-            nil
-          end
-        end
-
-        def front_material_name(entity)
-          entity.respond_to?(:material) && entity.material ? entity.material.display_name.to_s : nil
-        end
-
-        def back_material_name(entity)
-          return nil unless entity.respond_to?(:back_material) && entity.back_material
-
-          entity.back_material.display_name.to_s
         end
       end
     end

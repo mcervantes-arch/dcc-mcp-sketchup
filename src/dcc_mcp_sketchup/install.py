@@ -38,6 +38,7 @@ from dcc_mcp_core.deployment import (
 
 from .__version__ import __version__
 from .compat import SUPPORTED, classify_host, unsupported_reason
+from .safety import PINNED_CORE_VERSION
 
 try:
     # Core 0.20.40 added this function, which answers the question this module
@@ -60,7 +61,7 @@ FALLBACK_REPORT_SCHEMA_VERSION = 1
 EXTENSION_DIRECTORY = "dcc_mcp_sketchup"
 REGISTRATION_FILENAME = "dcc_mcp_sketchup.rb"
 MIN_SKETCHUP_VERSION = 2021
-MIN_CORE_VERSION = "0.20.36"
+MIN_CORE_VERSION = PINNED_CORE_VERSION
 RECEIPT_RELATIVE_PATH = Path(".dcc-mcp") / "receipts" / "sketchup.json"
 BOOTSTRAP_ERRORS_RELATIVE_PATH = Path(".dcc-mcp") / "logs" / "sketchup-bootstrap-errors.jsonl"
 EXIT_OK = INSTALL_EXIT_OK
@@ -284,6 +285,19 @@ def _version_tuple(value: object) -> Optional[tuple[int, int, int]]:
     return parsed[0], parsed[1], parsed[2]
 
 
+def _require_pinned_core(version: object) -> None:
+    """Refuse any dcc-mcp-core release other than the pinned one."""
+    core = _version_tuple(version)
+    pinned = _version_tuple(PINNED_CORE_VERSION)
+    if core is None or pinned is None or core != pinned:
+        raise InstallFailure(
+            EXIT_PREFLIGHT,
+            "core",
+            "dcc-mcp-core %s is not the pinned version %s; refusing to continue"
+            % (version, PINNED_CORE_VERSION),
+        )
+
+
 def _run_bounded_command(command: Sequence[str], timeout: float = 10.0) -> dict[str, Any]:
     """Run one read-only probe without retaining unbounded child output."""
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
@@ -497,21 +511,7 @@ print(json.dumps({
             "python",
             "target interpreter returned invalid package metadata",
         )
-    core = _version_tuple(environment.get("core_version"))
-    floor = _version_tuple(MIN_CORE_VERSION)
-    if core is None:
-        raise InstallFailure(
-            EXIT_PREFLIGHT,
-            "core",
-            "target interpreter returned a noncanonical dcc-mcp-core version",
-        )
-    if floor is None or core < floor:
-        raise InstallFailure(
-            EXIT_PREFLIGHT,
-            "core",
-            f"dcc-mcp-core {environment['core_version']} is unsupported; "
-            f"version {MIN_CORE_VERSION} or newer is required",
-        )
+    _require_pinned_core(environment.get("core_version"))
     if Path(str(environment.get("python") or "")).resolve() != python.resolve():
         raise InstallFailure(
             EXIT_PREFLIGHT,
@@ -986,21 +986,7 @@ def plan(
         )
     python = _resolve_python(python_value)
     environment = _target_environment(python)
-    core = _version_tuple(environment.get("core_version"))
-    floor = _version_tuple(MIN_CORE_VERSION)
-    if core is None:
-        raise InstallFailure(
-            EXIT_PREFLIGHT,
-            "core",
-            "target interpreter returned a noncanonical dcc-mcp-core version",
-        )
-    if floor is None or core < floor:
-        raise InstallFailure(
-            EXIT_PREFLIGHT,
-            "core",
-            f"dcc-mcp-core {environment.get('core_version')} is unsupported; "
-            f"version {MIN_CORE_VERSION} or newer is required",
-        )
+    _require_pinned_core(environment.get("core_version"))
     adapter_version = environment.get("adapter_version")
     if _version_tuple(adapter_version) is None or adapter_version != __version__:
         raise InstallFailure(

@@ -5,7 +5,7 @@ description: >-
   Use for saved views, animation inclusion, organization, and entity tagging;
   use sketchup-session to discover persistent entity IDs first.
 license: MIT
-compatibility: "SketchUp 2021+; external sidecar Python 3.9+; dcc-mcp-core 0.20.36+"
+compatibility: "SketchUp 2021+; external sidecar Python 3.9+; dcc-mcp-core 0.20.36"
 allowed-tools: Python
 metadata:
   dcc-mcp:
@@ -22,3 +22,5 @@ metadata:
 
 Scene capture stores the active SketchUp view. The default Untagged tag cannot
 be removed, and any tag still used by model or definition entities is protected.
+Category tag folders and room groups reorganize the Outliner only. They do not
+move geometry, and a shared element is logged under each room instead of split.

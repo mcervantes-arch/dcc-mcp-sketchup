@@ -77,7 +77,6 @@ CHECK_READ_BACK_PRESENT = "read_back_present"
 
 # Tools that change the model or write a file. Every entry owes a read-back.
 MUTATING_TOOLS = (
-    "model.save",
     "model.save_copy",
     "model.import",
     "model.export",
@@ -88,16 +87,15 @@ MUTATING_TOOLS = (
     "entity.rename",
     "entity.erase",
     "entity.select",
-    "materials.create",
-    "materials.update",
-    "materials.assign",
-    "materials.remove",
+    "attributes.set",
     "scenes.create",
     "scenes.update",
     "scenes.remove",
     "tags.create",
     "tags.assign",
     "tags.remove",
+    "organize.categories",
+    "organize.rooms",
 )
 
 # Tools that observe state and change nothing. Kept here so the classification
@@ -113,7 +111,8 @@ READ_ONLY_TOOLS = (
     "model.inspect",
     "model.list_entities",
     "model.validate",
-    "materials.list",
+    "model.validate_spec",
+    "model.outliner",
     "scenes.list",
     "tags.list",
 )

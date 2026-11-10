@@ -51,9 +51,11 @@ from .compat import (
     supported_range_labels,
     unsupported_reason,
 )
+from .safety import PINNED_CORE_VERSION
 from .write_contract import MUTATING_TOOLS, READ_ONLY_TOOLS
 
-MIN_CORE_VERSION = "0.20.36"
+# The floor and the pin are the same release. A newer core is not accepted.
+MIN_CORE_VERSION = PINNED_CORE_VERSION
 
 # Machine-readable error codes for host support verdicts.
 ERROR_HOST_TOO_OLD = "sketchup_host_version_unsupported"
@@ -140,6 +142,7 @@ def _report(
         "adapter_version": __version__,
         "core_version": running_core_version,
         "min_core_version": MIN_CORE_VERSION,
+        "pinned_core_version": PINNED_CORE_VERSION,
         "checks": checks,
         "steps": steps,
         "next_steps": list(next_steps or ()),
@@ -215,19 +218,20 @@ def doctor_report(verb: str = "doctor", timeout: float = 30.0) -> dict[str, Any]
     steps.append({"id": "validate-configuration", "status": "ok"})
 
     core_release = _version_tuple(running_core_version)
-    minimum_core = _version_tuple(MIN_CORE_VERSION)
+    pinned_core = _version_tuple(PINNED_CORE_VERSION)
     core_compatible = (
-        core_release is not None and minimum_core is not None and core_release >= minimum_core
+        core_release is not None and pinned_core is not None and core_release == pinned_core
     )
     checks["core"] = {
         "success": core_compatible,
         "version": running_core_version,
+        "pinned": PINNED_CORE_VERSION,
         "minimum": MIN_CORE_VERSION,
     }
     if not core_compatible:
-        reason = "dcc-mcp-core %s is unsupported; %s or newer is required" % (
-            running_core_version,
-            MIN_CORE_VERSION,
+        reason = (
+            "dcc-mcp-core %s is not the pinned version %s; refusing to continue"
+            % (running_core_version, PINNED_CORE_VERSION)
         )
         steps.append({"id": "validate-core", "status": "failed", "message": reason})
         return _report(
@@ -239,16 +243,10 @@ def doctor_report(verb: str = "doctor", timeout: float = 30.0) -> dict[str, Any]
             reason,
             [
                 _command_step(
-                    "upgrade-core",
-                    "Upgrade dcc-mcp-core",
-                    [
-                        sys.executable,
-                        "-m",
-                        "pip",
-                        "install",
-                        "--upgrade",
-                        "dcc-mcp-core>=%s" % MIN_CORE_VERSION,
-                    ],
+                    "stop-core-pin",
+                    "Stop. dcc-mcp-core must be exactly the pinned version. "
+                    "Do not upgrade it from this process.",
+                    ["dcc-mcp-sketchup", "doctor", "--json"],
                     reason,
                 )
             ],

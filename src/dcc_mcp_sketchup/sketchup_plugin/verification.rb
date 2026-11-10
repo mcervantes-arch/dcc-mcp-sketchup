@@ -182,9 +182,9 @@ module DccMcp
         def check_center_moved!(tool, checks, entity, before, translation)
           return unless entity.respond_to?(:bounds)
 
-          # Rotation and scaling are applied about the entity centre, which
-          # leaves the centre invariant, so translation is the only component
-          # the centre must reflect after the transform.
+          # Rotation is applied about the entity centre, which leaves the centre
+          # invariant, so translation is the only component the centre must
+          # reflect after the transform. Scale is not part of the command.
           expected = [
             before[0] + translation[0].to_f,
             before[1] + translation[1].to_f,

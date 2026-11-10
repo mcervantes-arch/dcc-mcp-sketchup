@@ -11,7 +11,6 @@ SKILLS_ROOT = Path("src/dcc_mcp_sketchup/skills")
 def test_all_packaged_skills_pass_core_validation():
     skill_dirs = sorted(path.parent for path in SKILLS_ROOT.glob("*/SKILL.md"))
     assert [path.name for path in skill_dirs] == [
-        "sketchup-materials",
         "sketchup-modeling",
         "sketchup-scenes",
         "sketchup-session",
@@ -51,7 +50,7 @@ def test_tool_manifests_are_typed_and_point_to_scripts():
             assert isinstance(calls[0].args[0], ast.Constant)
             script_methods.add(calls[0].args[0].value)
 
-    assert len(tool_names) == 28
+    assert len(tool_names) == 27
     ruby_source = Path("src/dcc_mcp_sketchup/sketchup_plugin/commands.rb").read_text(
         encoding="utf-8"
     )

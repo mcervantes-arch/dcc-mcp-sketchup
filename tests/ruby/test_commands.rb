@@ -31,6 +31,40 @@ class CommandsTest < Minitest::Test
     }.merge(overrides)
   end
 
+  def with_project(directory)
+    previous = ENV['DCC_MCP_SKETCHUP_PROJECT_FOLDER']
+    ENV['DCC_MCP_SKETCHUP_PROJECT_FOLDER'] = directory
+    yield
+  ensure
+    if previous.nil?
+      ENV.delete('DCC_MCP_SKETCHUP_PROJECT_FOLDER')
+    else
+      ENV['DCC_MCP_SKETCHUP_PROJECT_FOLDER'] = previous
+    end
+  end
+
+  def place(width, depth, height, x = 0, y = 0, z = 0)
+    group = model.entities.add_group
+    # FakeBounds is (X width, Y height, Z depth). Spec depth is Y and spec height is Z.
+    group.drift_bounds(width, depth, height)
+    group.translate([x, y, z])
+    group
+  end
+
+  def spec_element(entity, type, x: 0, y: 0, z: 0)
+    {
+      'id' => entity.persistent_id,
+      'type' => type,
+      'x' => x,
+      'y' => y,
+      'z' => z,
+      'width' => entity.bounds.width,
+      'depth' => entity.bounds.height,
+      'height' => entity.bounds.depth,
+      'unit' => 'inches'
+    }
+  end
+
   # --- existing contract -------------------------------------------------
 
   def test_ping_reports_bounded_command_map
@@ -39,7 +73,7 @@ class CommandsTest < Minitest::Test
     assert_equal 'ok', result['status']
     assert_equal '2026.0', result['sketchup_version']
     assert_equal RUBY_VERSION, result['ruby_version']
-    assert_equal 29, result['command_count']
+    assert_equal 28, result['command_count']
     assert_equal Process.pid, result['host_pid']
     assert_equal DccMcp::SketchupAdapter::Commands::ADAPTER_VERSION, result['adapter_version']
     assert_equal File.expand_path('../../src/dcc_mcp_sketchup/sketchup_plugin', __dir__), result['plugin_path']
@@ -84,6 +118,7 @@ class CommandsTest < Minitest::Test
       path = File.join(directory, 'source.dae')
       File.write(path, '<COLLADA/>')
 
+      with_project(directory) do
       @commands.execute(
         'model.import',
         'path' => path,
@@ -92,6 +127,7 @@ class CommandsTest < Minitest::Test
 
       assert_equal path, model.import_call[0]
       assert_equal({ units: 'model', merge_coplanar_faces: true }, model.import_call[1])
+      end
     end
   end
 
@@ -99,10 +135,12 @@ class CommandsTest < Minitest::Test
     Dir.mktmpdir do |directory|
       path = File.join(directory, 'scene.glb')
 
+      with_project(directory) do
       @commands.execute('model.export', 'path' => path, 'options' => { 'selectionset_only' => false })
 
       assert_equal path, model.export_call[0]
       assert_equal({ selectionset_only: false }, model.export_call[1])
+      end
     end
   end
 
@@ -113,28 +151,52 @@ class CommandsTest < Minitest::Test
       too_many = 65.times.to_h { |index| ["option_#{index}", true] }
 
       error = assert_raises(ArgumentError) do
-        @commands.execute('model.import', 'path' => path, 'options' => too_many)
+        with_project(directory) do
+          @commands.execute('model.import', 'path' => path, 'options' => too_many)
+        end
       end
       assert_match(/at most 64 keys/, error.message)
 
       error = assert_raises(ArgumentError) do
-        @commands.execute('model.import', 'path' => path, 'options' => { 'not-valid!' => true })
+        with_project(directory) do
+          @commands.execute('model.import', 'path' => path, 'options' => { 'not-valid!' => true })
+        end
       end
       assert_match(/must match/, error.message)
     end
   end
 
-  def test_failed_material_removal_aborts_the_undo_operation
-    model.materials.add('Surface')
-    model.materials.remove_result = false
-
-    error = assert_raises(RuntimeError) do
-      @commands.execute('materials.remove', 'name' => 'Surface')
+  def test_model_save_is_not_a_command
+    error = assert_raises(ArgumentError) do
+      @commands.execute('model.save', {})
     end
 
-    assert_match(/could not remove material/, error.message)
+    assert_match(/Unsupported SketchUp command: model.save/, error.message)
+  end
+
+  def test_scale_is_rejected
+    group = model.entities.add_group
+
+    error = assert_raises(ArgumentError) do
+      @commands.execute(
+        'entity.transform',
+        'entity_id' => group.persistent_id,
+        'translation' => [1, 0, 0],
+        'scale' => [2, 2, 2]
+      )
+    end
+
+    assert_match(/Unexpected parameters: scale/, error.message)
     assert_equal 0, model.commits
-    assert_equal 1, model.aborts
+  end
+
+  def test_omitted_unit_is_inches
+    result = @commands.execute('geometry.add_box', 'width' => 10, 'depth' => 5, 'height' => 8)
+    extents = result.dig('verification', 'checks').find { |check| check['check'] == 'bounds_extents' }
+
+    assert_equal 'inches', result['unit']
+    assert_equal [10.0, 5.0, 8.0], extents['expected']
+    assert_equal [10.0, 5.0, 8.0], extents['actual']
   end
 
   def test_string_parameters_do_not_coerce_other_json_types
@@ -327,54 +389,220 @@ class CommandsTest < Minitest::Test
     refute_equal error.payload['expected'], error.payload['actual']
   end
 
-  def test_material_create_verifies_the_applied_values
+  def test_wall_offset_of_one_sixteenth_matches
+    wall = place(120.0, 6.0, 96.0, 1.0 / 16.0)
+    before = model.commits
+
+    result = @commands.execute('model.validate_spec', 'spec' => { 'elements' => [spec_element(wall, 'wall')] })
+    item = result['elements'].first
+
+    assert_equal 'MATCH', result['status']
+    assert_equal 'MATCH', item['status']
+    assert_equal false, result['edited']
+    assert_in_delta 0.125, item['tolerance_inches'], 1e-12
+    assert_in_delta 1.0 / 16.0, item['delta']['x'], 1e-9
+    assert_equal 'inches', result['unit']
+    assert_equal before, model.commits
+  end
+
+  def test_wall_offset_of_three_sixteenths_blocks
+    wall = place(120.0, 6.0, 96.0, 3.0 / 16.0)
+
+    result = @commands.execute('model.validate_spec', 'spec' => { 'elements' => [spec_element(wall, 'wall')] })
+
+    assert_equal 'BLOCK', result['status']
+    assert_equal 'BLOCK', result['elements'].first['status']
+    assert_in_delta 3.0 / 16.0, result['elements'].first['delta']['x'], 1e-9
+    assert_equal 0, model.commits
+    assert_in_delta 3.0 / 16.0, wall.bounds.min.x, 1e-9
+    assert_in_delta 120.0, wall.bounds.width, 1e-9
+  end
+
+  def test_wall_offset_of_exactly_one_eighth_matches
+    wall = place(120.0, 6.0, 96.0, 1.0 / 8.0)
+
+    result = @commands.execute('model.validate_spec', 'spec' => { 'elements' => [spec_element(wall, 'wall')] })
+
+    assert_equal 'MATCH', result['status']
+  end
+
+  def test_appliance_offset_of_one_thirty_second_blocks
+    appliance = place(36.0, 28.0, 70.0, 1.0 / 32.0)
+
     result = @commands.execute(
-      'materials.create', 'name' => 'Brick', 'color' => [10, 20, 30], 'alpha' => 0.5
+      'model.validate_spec', 'spec' => { 'elements' => [spec_element(appliance, 'appliance')] }
     )
-    checks = result['verification']['checks'].map { |check| check['check'] }
+    item = result['elements'].first
 
-    assert_includes checks, 'material_present'
-    assert_includes checks, 'material_color'
-    assert_includes checks, 'material_alpha'
-    assert_equal [10, 20, 30], result['verification']['checks'].find { |c| c['check'] == 'material_color' }['actual']
-    assert_in_delta 0.5, result['verification']['checks'].find { |c| c['check'] == 'material_alpha' }['actual'], 1e-9
+    assert_equal 'BLOCK', result['status']
+    assert_equal 'BLOCK', item['status']
+    assert_equal 0, item['tolerance_inches']
+    assert_in_delta 1.0 / 32.0, item['delta']['x'], 1e-9
   end
 
-  def test_material_create_rejects_an_alpha_that_was_not_applied
-    model.materials.define_singleton_method(:add) do |name|
-      material = Sketchup::Material.new(name)
-      material.define_singleton_method(:alpha) { 1.0 }
-      @values << material
-      material
+  def test_missing_entity_blocks_without_editing
+    before = model.entities.length
+
+    result = @commands.execute(
+      'model.validate_spec',
+      'spec' => {
+        'elements' => [
+          {
+            'id' => 9_999_999, 'type' => 'wall',
+            'x' => 0, 'y' => 0, 'z' => 0,
+            'width' => 1, 'depth' => 1, 'height' => 1
+          }
+        ]
+      }
+    )
+
+    assert_equal 'BLOCK', result['status']
+    assert_nil result['elements'].first['available']
+    assert_nil result['elements'].first['delta']
+    assert_equal false, result['edited']
+    assert_equal before, model.entities.length
+    assert_equal 0, model.commits
+  end
+
+  def test_missing_axis_is_not_invented
+    wall = place(10, 1, 8)
+    element = spec_element(wall, 'wall')
+    element.delete('width')
+
+    error = assert_raises(ArgumentError) do
+      @commands.execute('model.validate_spec', 'spec' => { 'elements' => [element] })
     end
 
-    error = assert_raises(DccMcp::SketchupAdapter::VerificationFailure) do
-      @commands.execute('materials.create', 'name' => 'Brick', 'alpha' => 0.25)
-    end
-
-    assert_equal 'material_alpha', error.payload['check']
-    assert_in_delta 0.25, error.payload['expected'], 1e-9
-    assert_in_delta 1.0, error.payload['actual'], 1e-9
+    assert_match(/missing width/, error.message)
+    assert_equal 0, model.commits
   end
 
-  def test_material_update_verifies_the_renamed_target
-    model.materials.add('Brick')
+  def test_absent_type_is_not_invented
+    wall = place(10, 1, 8)
 
-    result = @commands.execute('materials.update', 'name' => 'Brick', 'new_name' => 'Stone')
-    present = result['verification']['checks'].find { |check| check['check'] == 'material_present' }
+    result = @commands.execute('model.validate_spec', 'spec' => { 'elements' => [spec_element(wall, 'wall')] })
 
-    assert_equal 'Stone', present['expected']
-    assert_equal 'Stone', present['actual']
+    assert_equal 'MATCH', result['status']
+    assert_nil result['elements'].first['available']['type']
   end
 
-  def test_material_remove_verifies_absence
-    model.materials.add('Brick')
+  def test_type_conflict_within_tolerance_is_a_mismatch
+    wall = place(120.0, 6.0, 96.0)
+    wall.set_attribute('renco', 'type', 'appliance')
 
-    result = @commands.execute('materials.remove', 'name' => 'Brick')
-    absent = result['verification']['checks'].find { |check| check['check'] == 'material_absent' }
+    result = @commands.execute('model.validate_spec', 'spec' => { 'elements' => [spec_element(wall, 'wall')] })
 
-    assert_equal false, absent['expected']
-    assert_equal false, absent['actual']
+    assert_equal 'MISMATCH', result['status']
+    assert_equal 'appliance', result['elements'].first['available']['type']
+    assert_equal 'wall', result['elements'].first['specified']['type']
+  end
+
+  def test_block_wins_over_mismatch
+    wall = place(120.0, 6.0, 96.0)
+    wall.set_attribute('renco', 'type', 'appliance')
+    drifted = place(10.0, 10.0, 10.0, 1.0)
+
+    result = @commands.execute(
+      'model.validate_spec',
+      'spec' => { 'elements' => [spec_element(wall, 'wall'), spec_element(drifted, 'wall')] }
+    )
+
+    assert_equal 'BLOCK', result['status']
+  end
+
+  def test_category_folders_do_not_move_geometry
+    wall = place(100.0, 6.0, 90.0, 4, 5, 6)
+    before = [wall.bounds.min.x, wall.bounds.min.y, wall.bounds.min.z, wall.bounds.width, wall.bounds.height, wall.bounds.depth]
+    commits = model.commits
+
+    result = @commands.execute('organize.categories', {})
+    after = [wall.bounds.min.x, wall.bounds.min.y, wall.bounds.min.z, wall.bounds.width, wall.bounds.height, wall.bounds.depth]
+    names = result['categories'].map { |item| item['folder'] }
+
+    assert_equal before, after
+    assert_includes names, 'Walls – Bedroom'
+    assert_includes names, 'Appliances'
+    assert_equal false, result['geometry_moved']
+    assert_includes result.dig('verification', 'checks').map { |check| check['check'] }, "bounds_unchanged_#{wall.persistent_id}"
+    assert_equal commits + 1, model.commits
+  end
+
+  def test_shared_room_is_logged_and_not_split
+    shared = place(30.0, 20.0, 10.0, 2, 3, 4)
+    only = place(12.0, 12.0, 12.0, 8, 0, 0)
+    shared_before = [shared.bounds.min.x, shared.bounds.max.x, shared.bounds.min.y, shared.bounds.max.y]
+    only_before = [only.bounds.width, only.bounds.height, only.bounds.depth]
+
+    result = @commands.execute(
+      'organize.rooms',
+      'rooms' => [
+        { 'name' => 'Kitchen', 'entity_ids' => [shared.persistent_id, only.persistent_id] },
+        { 'name' => 'Living', 'entity_ids' => [shared.persistent_id] }
+      ]
+    )
+
+    assert_equal false, result['geometry_moved']
+    assert_equal [shared.bounds.min.x, shared.bounds.max.x, shared.bounds.min.y, shared.bounds.max.y], shared_before
+    assert_equal [only.bounds.width, only.bounds.height, only.bounds.depth], only_before
+    assert_includes model.entities.to_a, shared
+    refute_includes model.entities.to_a, only
+    rooms = result['shared'].select { |item| item['entity_id'] == shared.persistent_id }
+    assert_equal %w[Kitchen Living], rooms.map { |item| item['room'] }
+    assert_equal [false, false], rooms.map { |item| item['split'] }
+    assert_equal %w[Kitchen Living], shared.get_attribute('renco', 'rooms')
+    room_group = model.entities.to_a.find { |item| item.respond_to?(:name) && item.name == 'Kitchen' }
+    assert_includes room_group.entities.to_a, only
+    refute_includes room_group.entities.to_a, shared
+  end
+
+  def test_outliner_reads_nested_groups_components_and_attributes
+    outer = model.entities.add_group
+    outer.name = 'Walls'
+    inner = outer.entities.add_group
+    inner.name = 'Stud'
+    definition = FakeComponentDefinition.new('RangeDef')
+    shelf = FakeGroup.new
+    shelf.name = 'Shelf'
+    definition.entities << shelf
+    instance = FakeComponentInstance.new(definition)
+    instance.name = 'Range'
+    instance.set_attribute('renco', 'id', 'A-1')
+    model.entities.add_existing(instance)
+    model.register(instance)
+
+    result = @commands.execute('model.outliner', {})
+    nodes = result['hierarchy']
+    wall = nodes.find { |node| node['name'] == 'Walls' }
+    range = nodes.find { |node| node['name'] == 'Range' }
+
+    assert_equal 'Group', wall['type']
+    assert_equal inner.persistent_id, wall['children'].first['persistent_id']
+    assert_equal 'Stud', wall['children'].first['name']
+    assert_equal 'ComponentInstance', range['type']
+    assert_equal instance.persistent_id, range['persistent_id']
+    assert_equal instance.entityID, range['entity_id']
+    assert_equal 'A-1', range.dig('attributes', 'renco', 'id')
+    assert_equal 'Shelf', range['children'].first['name']
+    assert_equal 'inches', result['unit']
+    refute_includes result.keys, 'verification'
+  end
+
+  def test_attribute_write_is_one_undo
+    group = model.entities.add_group
+    commits = model.commits
+
+    result = @commands.execute(
+      'attributes.set',
+      'entity_id' => group.persistent_id,
+      'dictionary' => 'renco',
+      'key' => 'type',
+      'value' => 'wall'
+    )
+
+    assert_equal 'wall', group.get_attribute('renco', 'type')
+    assert_equal true, result.dig('verification', 'verified')
+    assert_equal commits + 1, model.commits
+    assert_equal 0, model.aborts
   end
 
   def test_scene_lifecycle_is_verified
@@ -436,28 +664,126 @@ class CommandsTest < Minitest::Test
     assert_equal 'Walls', assigned['actual']
   end
 
-  def test_save_model_verifies_the_file_and_the_modified_flag
+  def test_save_copy_writes_a_new_versioned_file
     Dir.mktmpdir do |directory|
-      path = File.join(directory, 'model.skp')
+      path = File.join(directory, 'Model v1.0.skp')
 
-      result = @commands.execute('model.save', 'path' => path)
-      checks = result['verification']['checks'].map { |check| check['check'] }
-
-      assert_includes checks, 'file_exists'
-      assert_includes checks, 'file_non_empty'
-      assert_includes checks, 'model_not_modified'
-      assert File.file?(path)
-    end
-  end
-
-  def test_save_copy_verifies_the_copy_exists
-    Dir.mktmpdir do |directory|
-      path = File.join(directory, 'copy.skp')
-
-      result = @commands.execute('model.save_copy', 'path' => path)
+      result = with_project(directory) do
+        @commands.execute('model.save_copy', 'path' => path)
+      end
 
       assert_equal true, result.dig('verification', 'verified')
       assert File.file?(path)
+      assert_includes result.dig('verification', 'checks').map { |check| check['check'] }, 'source_path_unchanged'
+    end
+  end
+
+  def test_overwrite_is_refused
+    Dir.mktmpdir do |directory|
+      path = File.join(directory, 'Model v1.0.skp')
+
+      error = assert_raises(ArgumentError) do
+        with_project(directory) do
+          @commands.execute('model.save_copy', 'path' => path, 'overwrite' => true)
+        end
+      end
+
+      assert_match(/Unexpected parameters: overwrite/, error.message)
+      refute File.file?(path)
+    end
+  end
+
+  def test_existing_save_target_is_refused
+    Dir.mktmpdir do |directory|
+      path = File.join(directory, 'Model v1.1.skp')
+      File.write(path, 'already here')
+
+      error = assert_raises(ArgumentError) do
+        with_project(directory) do
+          @commands.execute('model.save_copy', 'path' => path)
+        end
+      end
+
+      assert_match(/save target already exists/, error.message)
+      assert_equal 'already here', File.read(path)
+    end
+  end
+
+  def test_save_copy_refuses_the_source_path
+    Dir.mktmpdir do |directory|
+      path = File.join(directory, 'Model v1.0.skp')
+      model.instance_variable_set(:@path, path)
+
+      error = assert_raises(ArgumentError) do
+        with_project(directory) do
+          @commands.execute('model.save_copy', 'path' => path)
+        end
+      end
+
+      assert_match(/must differ from the source path/, error.message)
+      refute File.file?(path)
+    end
+  end
+
+  def test_unversioned_save_name_is_refused
+    Dir.mktmpdir do |directory|
+      path = File.join(directory, 'model.skp')
+
+      error = assert_raises(ArgumentError) do
+        with_project(directory) do
+          @commands.execute('model.save_copy', 'path' => path)
+        end
+      end
+
+      assert_match(/versioned \.skp name/, error.message)
+    end
+  end
+
+  def test_path_outside_the_project_folder_is_refused
+    Dir.mktmpdir do |project|
+      Dir.mktmpdir do |outside|
+        path = File.join(outside, 'Model v1.0.skp')
+
+        error = assert_raises(ArgumentError) do
+          with_project(project) do
+            @commands.execute('model.save_copy', 'path' => path)
+          end
+        end
+
+        assert_match(/outside the project folder/, error.message)
+        refute File.file?(path)
+      end
+    end
+  end
+
+  def test_symlink_escape_is_refused
+    Dir.mktmpdir do |project|
+      Dir.mktmpdir do |outside|
+        link = File.join(project, 'escape')
+        File.symlink(outside, link)
+        path = File.join(link, 'Model v1.0.skp')
+
+        error = assert_raises(ArgumentError) do
+          with_project(project) do
+            @commands.execute('model.export', 'path' => path.sub(/\.skp\z/, '.dae'))
+          end
+        end
+
+        assert_match(/outside the project folder/, error.message)
+      end
+    end
+  end
+
+  def test_unset_project_folder_fails_closed
+    Dir.mktmpdir do |directory|
+      path = File.join(directory, 'Model v1.0.skp')
+      ENV.delete('DCC_MCP_SKETCHUP_PROJECT_FOLDER')
+
+      error = assert_raises(ArgumentError) do
+        @commands.execute('model.save_copy', 'path' => path)
+      end
+
+      assert_match(/project folder is not configured/, error.message)
     end
   end
 
@@ -465,10 +791,28 @@ class CommandsTest < Minitest::Test
     Dir.mktmpdir do |directory|
       path = File.join(directory, 'scene.glb')
 
-      result = @commands.execute('model.export', 'path' => path)
+      result = with_project(directory) do
+        @commands.execute('model.export', 'path' => path)
+      end
 
       assert_equal true, result.dig('verification', 'verified')
       assert File.file?(path)
+    end
+  end
+
+  def test_existing_export_target_is_refused
+    Dir.mktmpdir do |directory|
+      path = File.join(directory, 'scene.glb')
+      File.write(path, 'keep')
+
+      error = assert_raises(ArgumentError) do
+        with_project(directory) do
+          @commands.execute('model.export', 'path' => path)
+        end
+      end
+
+      assert_match(/save target already exists/, error.message)
+      assert_equal 'keep', File.read(path)
     end
   end
 
@@ -478,7 +822,9 @@ class CommandsTest < Minitest::Test
       model.define_singleton_method(:export) { |_target, _options = nil| true }
 
       error = assert_raises(DccMcp::SketchupAdapter::VerificationFailure) do
-        @commands.execute('model.export', 'path' => path)
+        with_project(directory) do
+          @commands.execute('model.export', 'path' => path)
+        end
       end
 
       assert_equal 'file_exists', error.payload['check']
@@ -492,7 +838,9 @@ class CommandsTest < Minitest::Test
       path = File.join(directory, 'source.dae')
       File.write(path, '<COLLADA/>')
 
-      result = @commands.execute('model.import', 'path' => path)
+      result = with_project(directory) do
+        @commands.execute('model.import', 'path' => path)
+      end
       checks = result['verification']['checks'].map { |check| check['check'] }
 
       assert_includes checks, 'root_entity_count_not_decreased'
@@ -506,54 +854,68 @@ class CommandsTest < Minitest::Test
     mutating = %w[
       model.save_copy model.import model.export
       geometry.add_box geometry.add_cylinder geometry.group
-      entity.rename entity.erase entity.select
-      materials.create materials.remove materials.assign
-      scenes.create scenes.remove
-      tags.create tags.remove
+      entity.rename entity.transform attributes.set
+      organize.categories organize.rooms
+      entity.select entity.erase
+      scenes.create scenes.update scenes.remove
+      tags.create tags.assign tags.remove
     ]
 
     Dir.mktmpdir do |directory|
-      # model.save_copy / export need a writable target; import needs a source.
       File.write(File.join(directory, 'source.dae'), '<COLLADA/>')
       model.entities.add_group
-      model.materials.add('Brick')
       model.pages.add('Shot 1')
       model.layers.add('Walls')
 
-      mutating.each do |name|
-        params = case name
-                 when 'model.save_copy' then { 'path' => File.join(directory, 'copy.skp') }
-                 when 'model.export' then { 'path' => File.join(directory, 'scene.glb') }
-                 when 'model.import' then { 'path' => File.join(directory, 'source.dae') }
-                 when 'geometry.add_box' then box_params
-                 when 'geometry.add_cylinder' then { 'radius' => 0.5, 'height' => 2.0 }
-                 when 'geometry.group' then { 'entity_ids' => [model.entities.first.persistent_id] }
-                 when 'entity.rename' then { 'entity_id' => model.entities.first.persistent_id, 'name' => 'Wall' }
-                 when 'entity.erase', 'entity.select' then { 'entity_ids' => [model.entities.first.persistent_id] }
-                 when 'materials.create' then { 'name' => 'Stone' }
-                 when 'materials.remove' then { 'name' => 'Stone' }
-                 when 'materials.assign' then { 'entity_id' => model.entities.first.persistent_id, 'material' => 'Brick' }
-                 when 'scenes.create' then { 'name' => 'Shot 2' }
-                 when 'scenes.remove' then { 'name' => 'Shot 1' }
-                 when 'tags.create' then { 'name' => 'Doors' }
-                 when 'tags.remove' then { 'name' => 'Walls' }
-                 else {}
-                 end
+      with_project(directory) do
+        mutating.each do |name|
+          first = model.entities.first
+          params = case name
+                   when 'model.save_copy' then { 'path' => File.join(directory, 'Model v1.0.skp') }
+                   when 'model.export' then { 'path' => File.join(directory, 'scene.glb') }
+                   when 'model.import' then { 'path' => File.join(directory, 'source.dae') }
+                   when 'geometry.add_box' then box_params
+                   when 'geometry.add_cylinder' then { 'radius' => 0.5, 'height' => 2.0 }
+                   when 'geometry.group' then { 'entity_ids' => [first.persistent_id] }
+                   when 'entity.rename' then { 'entity_id' => first.persistent_id, 'name' => 'Wall' }
+                   when 'entity.transform' then { 'entity_id' => first.persistent_id, 'translation' => [1, 0, 0] }
+                   when 'entity.erase', 'entity.select' then { 'entity_ids' => [first.persistent_id] }
+                   when 'attributes.set' then { 'entity_id' => first.persistent_id, 'dictionary' => 'renco', 'key' => 'type', 'value' => 'wall' }
+                   when 'organize.rooms' then { 'rooms' => [{ 'name' => 'Kitchen', 'entity_ids' => [first.persistent_id] }] }
+                   when 'scenes.create' then { 'name' => 'Shot 2' }
+                   when 'scenes.update' then { 'name' => 'Shot 2', 'new_name' => 'Shot 3' }
+                   when 'scenes.remove' then { 'name' => 'Shot 1' }
+                   when 'tags.create' then { 'name' => 'CustomTag' }
+                   when 'tags.assign' then { 'entity_id' => first.persistent_id, 'tag' => 'Walls' }
+                   when 'tags.remove' then { 'name' => 'CustomTag' }
+                   else {}
+                   end
 
-        result = @commands.execute(name, params)
-        assert_equal true, result.dig('verification', 'verified'), "#{name} returned no verified read-back"
-        refute_empty result.dig('verification', 'checks'), "#{name} verified with no checks"
-        assert_equal name, result.dig('verification', 'tool')
+          result = @commands.execute(name, params)
+          assert_equal true, result.dig('verification', 'verified'), "#{name} returned no verified read-back"
+          refute_empty result.dig('verification', 'checks'), "#{name} verified with no checks"
+          assert_equal name, result.dig('verification', 'tool')
+        end
       end
     end
   end
 
   def test_read_only_commands_carry_no_verification_block
-    %w[diagnostics.ping model.inspect model.list_entities model.validate
-       materials.list scenes.list tags.list].each do |name|
-      result = @commands.execute(name, {})
+    wall = place(10, 1, 8)
+    calls = {
+      'diagnostics.ping' => {},
+      'model.inspect' => {},
+      'model.list_entities' => {},
+      'model.validate' => {},
+      'model.validate_spec' => { 'spec' => { 'elements' => [spec_element(wall, 'wall')] } },
+      'model.outliner' => {},
+      'scenes.list' => {},
+      'tags.list' => {}
+    }
+    calls.each do |name, params|
+      result = @commands.execute(name, params)
 
-      refute_includes result.keys, 'verification'
+      refute_includes result.keys, 'verification', name
     end
   end
 end

@@ -10,7 +10,7 @@
 
 Production SketchUp adapter for the [DCC-MCP](https://github.com/dcc-mcp) ecosystem.
 It combines a small Ruby extension inside SketchUp with an external Python
-sidecar, exposing 28 typed tools without arbitrary Ruby execution.
+sidecar, exposing typed tools without arbitrary Ruby execution.
 
 ![Typed SketchUp model inspection, construction, organization, validation, and interchange export](docs/images/sketchup-showcase.webp)
 
@@ -20,7 +20,7 @@ sidecar, exposing 28 typed tools without arbitrary Ruby execution.
 <!-- Generated from dcc-mcp-catalog.yml by scripts/generate_adapter_pointer.py in dcc-mcp/dcc-mcp-core. Do not edit by hand. -->
 ## Part of the DCC-MCP host matrix
 
-**dcc-mcp-sketchup** — SketchUp adapter with typed modeling, materials, scenes,
+**dcc-mcp-sketchup** — SketchUp adapter with typed modeling, scenes,
 validation, and interchange workflows.
 
 It is one of **47 host adapters** in the DCC-MCP catalog. Every adapter speaks the same
@@ -39,10 +39,10 @@ Re-run the generator after changing the catalog.
 ## Capabilities
 
 - Inspect model identity, bounds, entities, selection, and validation state.
-- Save or copy `.skp` models and use installed SketchUp importers/exporters.
-- Create boxes and cylinders, group, transform, rename, select, and erase entities.
-- List, create, edit, assign, and safely remove materials.
-- Manage saved scenes and Tags.
+- Save a new versioned `.skp` copy. Existing paths and the source path are refused.
+- Create boxes and cylinders, group, move, rotate, rename, select, and erase entities.
+- Manage saved scenes, category tag folders, and room groups.
+- Compare a model with a spec (`validate_spec`) without editing it.
 - Reference entities through SketchUp persistent IDs.
 - Package four discoverable DCC-MCP Skills with complete JSON Schemas and MCP annotations.
 
@@ -105,7 +105,7 @@ mutation is only proven once the Ruby side has read the target back. See
 
 - SketchUp Desktop 2021 or newer on Windows or macOS.
 - Python 3.9 or newer for the external sidecar.
-- `dcc-mcp-core>=0.20.36,<1.0.0` (installed automatically).
+- `dcc-mcp-core==0.20.36` (pinned; the adapter refuses any other version).
 
 Importer and exporter availability varies by SketchUp edition, version, and
 installed extensions. The adapter reports the host error instead of claiming a
@@ -149,14 +149,13 @@ dcc-mcp-sketchup uninstall --dcc-path "C:/Program Files/SketchUp/SketchUp 2026/S
 
 | Skill | Tools |
 | --- | --- |
-| `sketchup-session` | status, inspection, root entities, save, copy, validate, import, export |
-| `sketchup-modeling` | box, cylinder, group, transform, rename, erase, select |
-| `sketchup-materials` | list, create, update, assign, remove |
-| `sketchup-scenes` | list/create/update/remove scenes and Tags |
+| `sketchup-session` | status, inspection, root entities, versioned copy, validate, spec check, outliner, import, export |
+| `sketchup-modeling` | box, cylinder, group, move/rotate, attributes, rename, erase, select |
+| `sketchup-scenes` | scenes, Tags, category folders, room groups |
 
-File paths must be absolute. Existing export and copy targets are refused unless
-`overwrite=true`. Removing a material or Tag is refused while model content uses
-it. The default Untagged Tag is never removable.
+Lengths default to inches. Import and export stay inside `DCC_MCP_SKETCHUP_PROJECT_FOLDER`.
+`save_copy` requires a new `<name> v<major>.<minor>.skp` and refuses an existing
+file. There is no overwrite. The default Untagged Tag is never removable.
 
 ## Host support (doctor)
 

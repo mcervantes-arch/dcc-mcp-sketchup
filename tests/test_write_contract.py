@@ -228,7 +228,7 @@ def test_every_skill_script_imports_and_classifies():
     import sys
 
     scripts = sorted((ROOT / "src" / "dcc_mcp_sketchup" / "skills").glob("*/scripts/*.py"))
-    assert len(scripts) == 28
+    assert len(scripts) == 27
 
     src = str(ROOT / "src")
     added = src not in sys.path
